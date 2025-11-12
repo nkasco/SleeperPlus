@@ -1,0 +1,192 @@
+body {
+  font-family: Arial, Helvetica, sans-serif;
+  margin: 0;
+  padding: 0;
+  background-color: #0f1218;
+  color: #f5f6f7;
+}
+
+.page {
+  display: flex;
+  justify-content: center;
+  padding: 48px 16px;
+}
+
+.settings-card {
+  width: min(540px, 100%);
+  background-color: #1a1f29;
+  border-radius: 18px;
+  padding: 32px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.settings-card__header > h1 {
+  margin: 0;
+  font-size: 2rem;
+}
+
+.settings-card__header > p {
+  margin: 12px 0 0;
+  line-height: 1.6;
+  color: #cfd3dc;
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  margin-top: 28px;
+}
+
+.settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px;
+  background-color: #121723;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.settings-group > h2 {
+  margin: 0;
+  font-size: 1.2rem;
+  letter-spacing: 0.02em;
+}
+
+.helper {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #94a0b8;
+}
+
+label {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.league-input-row {
+  display: flex;
+  gap: 12px;
+}
+
+.league-input-row input[type="text"] {
+  flex: 1;
+}
+
+.league-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.league-placeholder {
+  font-size: 0.95rem;
+  color: #94a0b8;
+  font-style: italic;
+}
+
+.league-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background-color: rgba(30, 154, 109, 0.18);
+  color: #e0fff3;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.league-pill button {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+button.secondary {
+  background-color: #2d3545;
+  color: #fff;
+}
+
+input[type="text"],
+input[type="number"] {
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid #2d3545;
+  background-color: #0f1218;
+  color: inherit;
+  font-size: 1rem;
+}
+
+input[type="text"]:focus,
+input[type="number"]:focus {
+  outline: none;
+  border-color: #1e9a6d;
+  box-shadow: 0 0 0 3px rgba(30, 154, 109, 0.25);
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.toggle input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  accent-color: #1e9a6d;
+}
+
+.actions {
+  display: flex;
+  gap: 12px;
+}
+
+button {
+  padding: 12px 20px;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+button[type="submit"] {
+  background-color: #1e9a6d;
+  color: #fff;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+#message {
+  min-height: 1.2em;
+  margin: 0;
+}
+
+#message.success {
+  color: #79ffb0;
+}
+
+#message.error {
+  color: #ff7d7d;
+}

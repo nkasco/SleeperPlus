@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Sleeper+",
+  "description": "Chrome Extension to enhance the desktop web experience for Sleeper Fantasy Football.",
+  "version": "0.1.0",
+  "permissions": ["storage"],
+  "options_page": "options/options.html",
+  "background": {
+    "service_worker": "background/service_worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://sleeper.com/leagues/*"],
+      "js": ["content/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": ["https://sleeper.com/leagues/*"],
+  "action": {
+    "default_title": "Sleeper+"
+  }
+}
