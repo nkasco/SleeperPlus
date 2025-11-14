@@ -1,10 +1,23 @@
 {
+  "action": {
+    "default_title": "Sleeper+",
+    "default_icon": {
+      "128": "images/icon128.png",
+      "32": "images/icon.png",
+      "48": "images/icon48.png"
+    }
+   },
   "manifest_version": 3,
   "name": "Sleeper+",
-  "description": "Chrome Extension to enhance the desktop web experience for Sleeper Fantasy Football.",
+  "description": "Chrome Extension to enhance the desktop web experience for Sleeper Fantasy Football. Not affiliated with Sleeper.",
   "version": "0.1.0",
   "permissions": ["storage"],
   "options_page": "options/options.html",
+  "icons": {
+      "128": "images/icon128.png",
+      "32": "images/icon.png",
+      "48": "images/icon48.png"
+   },
   "background": {
     "service_worker": "background/service_worker.js"
   },
@@ -16,7 +29,5 @@
     }
   ],
   "host_permissions": ["https://sleeper.com/leagues/*"],
-  "action": {
-    "default_title": "Sleeper+"
-  }
+  "homepage_url": "https://github.com/nkasco/SleeperPlus"
 }
