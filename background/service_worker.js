@@ -799,6 +799,20 @@ const bootstrapCaches = () => {
   });
 };
 
+const extractLeagueIdsFromChange = (change) => {
+  if (!change) {
+    return [];
+  }
+  const { newValue } = change;
+  if (Array.isArray(newValue)) {
+    return sanitizeLeagueIdList(newValue);
+  }
+  if (newValue === undefined || newValue === null) {
+    return [];
+  }
+  return sanitizeLeagueIdList([String(newValue)]);
+};
+
 const respondAsync = (promise, sendResponse, label) => {
   promise
     .then((result) => {
@@ -842,6 +856,29 @@ chrome.runtime.onStartup?.addListener(() => {
   });
   scheduleRecurringAlarms();
   bootstrapCaches();
+});
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'sync') {
+    return;
+  }
+
+  const collected = [];
+  if (Object.prototype.hasOwnProperty.call(changes, 'leagueIds')) {
+    collected.push(...extractLeagueIdsFromChange(changes.leagueIds));
+  }
+  if (Object.prototype.hasOwnProperty.call(changes, 'leagueId')) {
+    collected.push(...extractLeagueIdsFromChange(changes.leagueId));
+  }
+
+  const nextLeagueIds = sanitizeLeagueIdList(collected);
+  if (nextLeagueIds.length === 0) {
+    return;
+  }
+
+  refreshLeagueSnapshots({ force: true, leagueIds: nextLeagueIds }).catch((error) => {
+    console.error('Sleeper+ failed to refresh league data after settings change', error);
+  });
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
