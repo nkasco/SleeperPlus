@@ -744,6 +744,7 @@
 
     const processingMap = new WeakMap();
     const trendCache = new Map();
+    const sparklineCache = new Map();
     const inflightTrends = new Map();
     const lookupCache = new Map();
     const inflightLookups = new Map();
@@ -1288,6 +1289,41 @@
       return true;
     };
 
+    const buildSeriesSignature = (series = []) =>
+      series
+        .map((entry = {}) => {
+          const week = entry.week ?? '';
+          const actual = Number(entry.points) || 0;
+          const projected =
+            entry.projected === null || entry.projected === undefined ? 'null' : Number(entry.projected) || 0;
+          const isFuture = entry.isFuture ? '1' : '0';
+          return `${week}:${actual}:${projected}:${isFuture}`;
+        })
+        .join('|');
+
+    const getPlayerSparkline = (playerId, series) => {
+      if (!series || series.length === 0) {
+        if (playerId) {
+          sparklineCache.delete(playerId);
+        }
+        return null;
+      }
+      if (!playerId) {
+        return createSparkline(series);
+      }
+      const signature = buildSeriesSignature(series);
+      const cached = sparklineCache.get(playerId);
+      if (cached?.signature === signature && cached.svg) {
+        return cached.svg.cloneNode(true);
+      }
+      const sparkline = createSparkline(series);
+      if (!sparkline) {
+        return null;
+      }
+      sparklineCache.set(playerId, { svg: sparkline.cloneNode(true), signature });
+      return sparkline;
+    };
+
     const buildSparklinePoints = (series, width, height) => {
       if (!series || series.length === 0) {
         return { linePoints: '', areaPoints: '', coords: [] };
@@ -1605,7 +1641,8 @@
 
       const chartWrapper = document.createElement('div');
       chartWrapper.className = CHART_CLASS;
-      const chart = createSparkline(data.weeklySeries);
+      const playerChartId = item?.dataset?.[DATASET_PLAYER_ID] || '';
+      const chart = getPlayerSparkline(playerChartId, data.weeklySeries);
       if (chart) {
         chartWrapper.appendChild(chart);
         stack.appendChild(chartWrapper);
@@ -1993,6 +2030,7 @@
       activeWeek = null;
       cleanupAll();
       trendCache.clear();
+      sparklineCache.clear();
       inflightTrends.clear();
       pendingTrendRequests = 0;
       updateRefreshIndicator();

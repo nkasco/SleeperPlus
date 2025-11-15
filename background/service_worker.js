@@ -789,12 +789,13 @@ const getPlayerTrendPayload = async ({ leagueId, playerId, week, attempt = 0 }) 
   }
 
   const selectedWeek = clampWeekWithinSeason(snapshot, week);
+  const sparklineWeek = Number(snapshot.currentWeek) || selectedWeek;
   const weeklyEntries = snapshot.playerWeekly?.[playerId] || [];
   const weeklySeries = buildWeeklySeries(weeklyEntries, {
     startWeek: snapshot.startWeek,
     currentWeek: snapshot.currentWeek,
     seasonEndWeek: snapshot.seasonEndWeek,
-    displayWeek: selectedWeek,
+    displayWeek: sparklineWeek,
   });
   const totalPoints = weeklySeries
     .filter((entry) => !entry.isFuture)
@@ -809,6 +810,7 @@ const getPlayerTrendPayload = async ({ leagueId, playerId, week, attempt = 0 }) 
     playerId,
     week: selectedWeek,
     weeklySeries,
+    sparklineWeek,
     totalPoints,
     age: playerRecord.age,
     yearsExp: playerRecord.years_exp,
