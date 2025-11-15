@@ -1,0 +1,16 @@
+Sleeper+ Privacy Policy
+Last updated: November 15, 2025
+
+Sleeper+ is a free Chrome extension that adds quality-of-life improvements to the Sleeper fantasy football website. We respect your privacy and keep the extension simple so you can enjoy Sleeper without worrying about additional tracking.
+
+Data Collection
+- We do not collect, log, sell, or transmit any personal data about you or your leagues.
+- All preferences you set (league IDs, layout options, trend toggles, etc.) are stored locally via Chrome's storage APIs and remain on your device.
+- Player and league information is fetched directly from Sleeper's public API endpoints solely to render the requested overlays. Those requests go straight from your browser to Sleeper; they are never proxied through servers we control.
+
+Data Sharing
+- We do not share data with advertisers, analytics providers, or third parties.
+- The extension does not inject additional cookies, pixels, or telemetry scripts beyond what Sleeper already serves.
+
+Contact
+If you have privacy questions or requests, please open an issue in the Sleeper+ repository or reach out via the listing page. We'll respond as quickly as possible.

@@ -33,11 +33,30 @@
               <input id="show-settings-button" type="checkbox" checked>
               <span>Show Sleeper+ Settings button</span>
             </label>
+            <label class="toggle" for="disable-sleeper-plus">
+              <input id="disable-sleeper-plus" type="checkbox">
+              <span>Disable Sleeper+ enhancements</span>
+            </label>
+          </div>
+
+          <div class="settings-group">
+            <h2>Trends &amp; Data</h2>
+            <label class="toggle" for="enable-trend-overlays">
+              <input id="enable-trend-overlays" type="checkbox" checked>
+              <span>Show player trend overlays on team pages</span>
+            </label>
+            <label class="toggle" for="show-opponent-ranks">
+              <input id="show-opponent-ranks" type="checkbox" checked>
+              <span>Show opponent rank indicator next to trends</span>
+            </label>
+            <button id="refresh-data-button" type="button" class="secondary">Refresh Sleeper data</button>
+            <p id="refresh-data-status" class="helper"></p>
           </div>
         </div>
 
         <div class="actions">
           <button id="save-button" type="submit">Save</button>
+          <button id="go-to-league-button" type="button" class="secondary">Go to League</button>
           <button id="clear-button" type="button" class="secondary">Reset</button>
         </div>
 

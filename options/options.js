@@ -1,6 +1,9 @@
 (function () {
 	const DEFAULT_CHAT_MAX_WIDTH = 400;
 	const DEFAULT_SHOW_SETTINGS_BUTTON = true;
+	const DEFAULT_DISABLE_SLEEPER_PLUS = false;
+	const DEFAULT_ENABLE_TREND_OVERLAYS = true;
+	const DEFAULT_SHOW_OPPONENT_RANKS = true;
 	const MIN_CHAT_MAX_WIDTH = 200;
 	const MAX_CHAT_MAX_WIDTH = 800;
 
@@ -9,10 +12,16 @@
 	const addLeagueButton = document.getElementById('add-league-button');
 	const leagueList = document.getElementById('league-list');
 	const chatWidthInput = document.getElementById('chat-max-width');
+	const disableExtensionInput = document.getElementById('disable-sleeper-plus');
 	const showButtonInput = document.getElementById('show-settings-button');
+	const enableTrendsInput = document.getElementById('enable-trend-overlays');
+	const showOpponentRanksInput = document.getElementById('show-opponent-ranks');
 	const message = document.getElementById('message');
 	const saveButton = document.getElementById('save-button');
+	const goToLeagueButton = document.getElementById('go-to-league-button');
 	const clearButton = document.getElementById('clear-button');
+	const refreshDataButton = document.getElementById('refresh-data-button');
+	const refreshDataStatus = document.getElementById('refresh-data-status');
 
 	let redirectTimeoutId = null;
 	let lastAddedLeagueId = '';
@@ -20,7 +29,12 @@
 		leagueIds: [],
 		chatMaxWidth: DEFAULT_CHAT_MAX_WIDTH,
 		showSettingsButton: DEFAULT_SHOW_SETTINGS_BUTTON,
+		disableSleeperPlus: DEFAULT_DISABLE_SLEEPER_PLUS,
+		enableTrendOverlays: DEFAULT_ENABLE_TREND_OVERLAYS,
+		showOpponentRanks: DEFAULT_SHOW_OPPONENT_RANKS,
 	};
+
+	let refreshInFlight = false;
 
 	const showMessage = (text, type) => {
 		message.textContent = text;
@@ -32,6 +46,54 @@
 		if (timeout) {
 			setTimeout(() => showMessage('', ''), timeout);
 		}
+	};
+
+	const setRefreshStatus = (text, type = '') => {
+		if (!refreshDataStatus) {
+			return;
+		}
+		refreshDataStatus.textContent = text || '';
+		refreshDataStatus.className = type ? `helper ${type}` : 'helper';
+	};
+
+	const syncRefreshButtonState = () => {
+		if (!refreshDataButton) {
+			return;
+		}
+		refreshDataButton.disabled = refreshInFlight || saveButton.disabled;
+	};
+
+	const setRefreshBusy = (isBusy) => {
+		if (!refreshDataButton) {
+			return;
+		}
+		refreshInFlight = isBusy;
+		refreshDataButton.textContent = isBusy ? 'Refreshing…' : 'Refresh Sleeper data';
+		syncRefreshButtonState();
+	};
+
+	const sendRuntimeMessage = (payload) => {
+		return new Promise((resolve, reject) => {
+			try {
+				chrome.runtime.sendMessage(payload, (response) => {
+					if (chrome.runtime.lastError) {
+						reject(new Error(chrome.runtime.lastError.message));
+						return;
+					}
+					if (!response) {
+						reject(new Error('No response from Sleeper+.'));
+						return;
+					}
+					if (!response.ok) {
+						reject(new Error(response.error || 'Sleeper+ request failed.'));
+						return;
+					}
+					resolve(response.result);
+				});
+			} catch (error) {
+				reject(error);
+			}
+		});
 	};
 
 	const normalizeLeagueId = (rawValue) => {
@@ -124,13 +186,33 @@
 				typeof result.showSettingsButton === 'boolean'
 					? result.showSettingsButton
 					: DEFAULT_SHOW_SETTINGS_BUTTON,
+			disableSleeperPlus:
+				typeof result.disableSleeperPlus === 'boolean'
+					? result.disableSleeperPlus
+					: DEFAULT_DISABLE_SLEEPER_PLUS,
+			enableTrendOverlays:
+				typeof result.enableTrendOverlays === 'boolean'
+					? result.enableTrendOverlays
+					: DEFAULT_ENABLE_TREND_OVERLAYS,
+			showOpponentRanks:
+				typeof result.showOpponentRanks === 'boolean'
+					? result.showOpponentRanks
+					: DEFAULT_SHOW_OPPONENT_RANKS,
 		};
 	};
 
 	const getStoredSettings = () => {
 		return new Promise((resolve) => {
 			chrome.storage.sync.get(
-				['leagueIds', 'leagueId', 'chatMaxWidth', 'showSettingsButton'],
+				[
+					'leagueIds',
+					'leagueId',
+					'chatMaxWidth',
+					'showSettingsButton',
+					'disableSleeperPlus',
+					'enableTrendOverlays',
+					'showOpponentRanks',
+				],
 				(result) => resolve(sanitizeStoredSettings(result))
 			);
 		});
@@ -145,7 +227,15 @@
 	const clearStoredSettings = () => {
 		return new Promise((resolve) => {
 			chrome.storage.sync.remove(
-				['leagueIds', 'leagueId', 'chatMaxWidth', 'showSettingsButton'],
+				[
+					'leagueIds',
+					'leagueId',
+					'chatMaxWidth',
+					'showSettingsButton',
+					'disableSleeperPlus',
+					'enableTrendOverlays',
+					'showOpponentRanks',
+				],
 				() => resolve()
 			);
 		});
@@ -154,10 +244,15 @@
 	const setLoading = (isLoading) => {
 		saveButton.disabled = isLoading;
 		clearButton.disabled = isLoading;
+		goToLeagueButton.disabled = isLoading;
 		leagueInput.disabled = isLoading;
 		addLeagueButton.disabled = isLoading;
 		chatWidthInput.disabled = isLoading;
+		disableExtensionInput.disabled = isLoading;
 		showButtonInput.disabled = isLoading;
+		enableTrendsInput.disabled = isLoading;
+		showOpponentRanksInput.disabled = isLoading;
+		syncRefreshButtonState();
 	};
 
 	const resetRedirectTimer = () => {
@@ -168,19 +263,12 @@
 	};
 
 	const redirectToLeague = (leagueId) => {
-		window.location.href = `https://sleeper.com/leagues/`;
-	};
-
-	const scheduleRedirectToLeague = (leagueId, delayMs = 600) => {
 		if (!leagueId) {
+			window.location.href = 'https://sleeper.com/leagues/';
 			return;
 		}
 
-		resetRedirectTimer();
-		redirectTimeoutId = setTimeout(() => {
-			redirectTimeoutId = null;
-			redirectToLeague(leagueId);
-		}, delayMs);
+		window.location.href = `https://sleeper.com/leagues/${leagueId}`;
 	};
 
 	const renderLeagueList = () => {
@@ -213,6 +301,18 @@
 
 			leagueList.appendChild(pill);
 		});
+	};
+
+	const scheduleRedirectToLeague = (leagueId, delayMs = 600) => {
+		if (!leagueId) {
+			return;
+		}
+
+		resetRedirectTimer();
+		redirectTimeoutId = setTimeout(() => {
+			redirectTimeoutId = null;
+			redirectToLeague(leagueId);
+		}, delayMs);
 	};
 
 	const addLeagueId = () => {
@@ -268,6 +368,22 @@
 		}
 	});
 
+	goToLeagueButton.addEventListener('click', () => {
+		resetRedirectTimer();
+
+		if (state.leagueIds.length === 0) {
+			withMessage('Add a league ID before opening a league.', 'error', 4000);
+			return;
+		}
+
+		const targetLeagueId =
+			(lastAddedLeagueId && state.leagueIds.includes(lastAddedLeagueId))
+				? lastAddedLeagueId
+				: state.leagueIds[0];
+		withMessage('Opening your league…', 'success', 1500);
+		redirectToLeague(targetLeagueId);
+	});
+
 	form.addEventListener('submit', async (event) => {
 		event.preventDefault();
 		resetRedirectTimer();
@@ -282,6 +398,9 @@
 		}
 
 		const showSettingsButton = showButtonInput.checked;
+		const disableSleeperPlus = disableExtensionInput.checked;
+		const enableTrendOverlays = enableTrendsInput.checked;
+		const showOpponentRanks = showOpponentRanksInput.checked;
 		const leagueIds = uniqueLeagueIds(state.leagueIds);
 
 		setLoading(true);
@@ -290,15 +409,27 @@
 				leagueIds,
 				chatMaxWidth: validatedChatWidth,
 				showSettingsButton,
+				disableSleeperPlus,
+				enableTrendOverlays,
+				showOpponentRanks,
 			});
 
 			state.leagueIds = leagueIds;
 			state.chatMaxWidth = validatedChatWidth;
 			state.showSettingsButton = showSettingsButton;
+			state.disableSleeperPlus = disableSleeperPlus;
+			state.enableTrendOverlays = enableTrendOverlays;
+			state.showOpponentRanks = showOpponentRanks;
 
 			renderLeagueList();
 
-			if (leagueIds.length > 0) {
+			if (disableSleeperPlus) {
+				withMessage(
+					'Settings saved. Sleeper+ enhancements are disabled until you toggle them back on.',
+					'success',
+					5000
+				);
+			} else if (leagueIds.length > 0) {
 				const redirectId = lastAddedLeagueId && leagueIds.includes(lastAddedLeagueId)
 					? lastAddedLeagueId
 					: leagueIds[0];
@@ -325,6 +456,11 @@
 
 	clearButton.addEventListener('click', async () => {
 		resetRedirectTimer();
+
+		if (!window.confirm('Reset all Sleeper+ settings? This action cannot be undone.')) {
+			return;
+		}
+
 		setLoading(true);
 
 		try {
@@ -332,11 +468,19 @@
 			state.leagueIds = [];
 			state.chatMaxWidth = DEFAULT_CHAT_MAX_WIDTH;
 			state.showSettingsButton = DEFAULT_SHOW_SETTINGS_BUTTON;
+			state.disableSleeperPlus = DEFAULT_DISABLE_SLEEPER_PLUS;
+			state.enableTrendOverlays = DEFAULT_ENABLE_TREND_OVERLAYS;
+			state.showOpponentRanks = DEFAULT_SHOW_OPPONENT_RANKS;
 			lastAddedLeagueId = '';
 
 			leagueInput.value = '';
 			chatWidthInput.value = DEFAULT_CHAT_MAX_WIDTH;
+			disableExtensionInput.checked = DEFAULT_DISABLE_SLEEPER_PLUS;
 			showButtonInput.checked = DEFAULT_SHOW_SETTINGS_BUTTON;
+			enableTrendsInput.checked = DEFAULT_ENABLE_TREND_OVERLAYS;
+			showOpponentRanksInput.checked = DEFAULT_SHOW_OPPONENT_RANKS;
+			setRefreshStatus('');
+			setRefreshBusy(false);
 			renderLeagueList();
 
 			withMessage(
@@ -356,6 +500,36 @@
 		}
 	});
 
+	refreshDataButton.addEventListener('click', async () => {
+		resetRedirectTimer();
+		if (refreshInFlight) {
+			return;
+		}
+
+		if (state.leagueIds.length === 0) {
+			setRefreshStatus('Add a league ID before refreshing.', 'error');
+			withMessage('Add a league ID before refreshing data.', 'error', 4000);
+			return;
+		}
+
+		setRefreshBusy(true);
+		setRefreshStatus('Refreshing Sleeper data…');
+		try {
+			await sendRuntimeMessage({
+				type: 'SLEEPER_PLUS_FORCE_REFRESH',
+				leagueIds: state.leagueIds,
+			});
+			setRefreshStatus('Data refresh requested. Updates may take a moment.', 'success');
+			withMessage('Sleeper data refresh requested.', 'success', 4000);
+		} catch (error) {
+			console.error('Sleeper+ manual refresh failed', error);
+			setRefreshStatus('Refresh failed. Check the console for details.', 'error');
+			withMessage('Unable to refresh data. See console for details.', 'error', 5000);
+		} finally {
+			setRefreshBusy(false);
+		}
+	});
+
 	(async () => {
 		setLoading(true);
 		try {
@@ -363,14 +537,23 @@
 			state.leagueIds = stored.leagueIds;
 			state.chatMaxWidth = stored.chatMaxWidth;
 			state.showSettingsButton = stored.showSettingsButton;
+			state.disableSleeperPlus = stored.disableSleeperPlus;
+			state.enableTrendOverlays = stored.enableTrendOverlays;
+			state.showOpponentRanks = stored.showOpponentRanks;
 			lastAddedLeagueId = state.leagueIds[state.leagueIds.length - 1] || '';
 
 			renderLeagueList();
 			chatWidthInput.value = state.chatMaxWidth;
+			disableExtensionInput.checked = state.disableSleeperPlus;
 			showButtonInput.checked = state.showSettingsButton;
+			enableTrendsInput.checked = state.enableTrendOverlays;
+			showOpponentRanksInput.checked = state.showOpponentRanks;
+			setRefreshStatus('');
 
 			if (state.leagueIds.length === 0) {
 				showMessage('Sleeper+ is inactive until you add a league ID.', 'error');
+			} else if (state.disableSleeperPlus) {
+				showMessage('Sleeper+ enhancements are currently disabled.', 'error');
 			}
 		} catch (error) {
 			console.error('Failed to load Sleeper+ settings', error);
