@@ -475,8 +475,8 @@ const fetchLeagueSnapshot = async (leagueId, playerDirectory, sharedState) => {
   });
 
   const playerWeeklySource = {};
-  const playerMatchups = {};
-  let latestMatchupRanks = {};
+  const playerMatchupsByWeek = {};
+  const matchupRanksByWeek = {};
 
   for (let week = startWeek; week <= seasonEndWeek; week += 1) {
     if (week !== startWeek) {
@@ -519,34 +519,36 @@ const fetchLeagueSnapshot = async (leagueId, playerDirectory, sharedState) => {
       record.projected[week] = Number(projectionPoints);
     });
 
-    if (week === currentWeek) {
-      const matchupRanks = buildOpponentPositionRanks(projectionMap, playerDirectory);
-      latestMatchupRanks = matchupRanks;
-      trackedPlayerIds.forEach((playerId) => {
-        const opponent = projectionMap.opponents[playerId];
-        if (!opponent) {
-          return;
-        }
-        const directoryEntry = playerDirectory[playerId];
-        if (!directoryEntry) {
-          return;
-        }
-        const position = derivePrimaryPosition(directoryEntry);
-        const rankingEntry = matchupRanks[position]?.[opponent];
-        if (!rankingEntry) {
-          return;
-        }
-        playerMatchups[playerId] = {
-          opponent,
-          position,
-          rank: rankingEntry.rank,
-          scale: rankingEntry.scale,
-          sampleSize: rankingEntry.count,
-          projectedAllowed: rankingEntry.total,
-          playerProjection: Number((projectionMap.projections[playerId] || 0).toFixed(2)),
-        };
-      });
-    }
+    const matchupRanks = buildOpponentPositionRanks(projectionMap, playerDirectory);
+    matchupRanksByWeek[week] = matchupRanks;
+
+    const weekMatchups = {};
+    trackedPlayerIds.forEach((playerId) => {
+      const opponent = projectionMap.opponents[playerId];
+      if (!opponent) {
+        return;
+      }
+      const directoryEntry = playerDirectory[playerId];
+      if (!directoryEntry) {
+        return;
+      }
+      const position = derivePrimaryPosition(directoryEntry);
+      const normalizedOpponent = opponent.toUpperCase();
+      const rankingEntry = matchupRanks[position]?.[normalizedOpponent];
+      if (!rankingEntry) {
+        return;
+      }
+      weekMatchups[playerId] = {
+        opponent: normalizedOpponent,
+        position,
+        rank: rankingEntry.rank,
+        scale: rankingEntry.scale,
+        sampleSize: rankingEntry.count,
+        projectedAllowed: rankingEntry.total,
+        playerProjection: Number((projectionMap.projections[playerId] || 0).toFixed(2)),
+      };
+    });
+    playerMatchupsByWeek[week] = weekMatchups;
   }
 
   // Ensure rostered players have a container even if no data is available.
@@ -556,6 +558,8 @@ const fetchLeagueSnapshot = async (leagueId, playerDirectory, sharedState) => {
 
   const playerWeekly = serializeWeeklyContainer(playerWeeklySource);
   const positionRanks = computePositionRanks(playerWeekly, playerDirectory);
+  const currentMatchups = playerMatchupsByWeek[currentWeek] || {};
+  const currentMatchupRanks = matchupRanksByWeek[currentWeek] || {};
   return {
     leagueId,
     season: league.season,
@@ -564,8 +568,10 @@ const fetchLeagueSnapshot = async (leagueId, playerDirectory, sharedState) => {
     seasonEndWeek,
     playerWeekly,
     positionRanks,
-    matchups: playerMatchups,
-    matchupRanks: latestMatchupRanks,
+    matchups: currentMatchups,
+    matchupRanks: currentMatchupRanks,
+    matchupsByWeek: playerMatchupsByWeek,
+    matchupRanksByWeek,
   };
 };
 
@@ -708,7 +714,7 @@ const findBestPlayerMatch = (directory, query) => {
   return fallbackMatch;
 };
 
-const buildWeeklySeries = (entries, startWeek, currentWeek, seasonEndWeek) => {
+const buildWeeklySeries = (entries, { startWeek, currentWeek, seasonEndWeek, displayWeek }) => {
   const actualMap = new Map();
   const projectedMap = new Map();
   (entries || []).forEach((entry) => {
@@ -722,20 +728,46 @@ const buildWeeklySeries = (entries, startWeek, currentWeek, seasonEndWeek) => {
     }
   });
 
+  const normalizedStartWeek = Number(startWeek) || 1;
+  const normalizedCurrentWeek = Number(currentWeek) || normalizedStartWeek;
+  const normalizedSeasonEnd = Math.max(
+    Number(seasonEndWeek) || normalizedCurrentWeek,
+    normalizedCurrentWeek
+  );
+  const requestedWeek = Number(displayWeek);
+  const futureMarker = Number.isFinite(requestedWeek)
+    ? Math.min(Math.max(requestedWeek, normalizedStartWeek), normalizedSeasonEnd)
+    : Math.min(Math.max(normalizedCurrentWeek, normalizedStartWeek), normalizedSeasonEnd);
+  const finalWeek = Math.max(normalizedSeasonEnd, futureMarker);
+
   const series = [];
-  const finalWeek = Math.max(currentWeek, Number(seasonEndWeek) || currentWeek);
-  for (let week = startWeek; week <= finalWeek; week += 1) {
+  for (let week = normalizedStartWeek; week <= finalWeek; week += 1) {
     series.push({
       week,
       points: actualMap.get(week) ?? 0,
       projected: projectedMap.has(week) ? projectedMap.get(week) : null,
-      isFuture: week > currentWeek,
+      isFuture: week > futureMarker,
     });
   }
   return series;
 };
 
-const getPlayerTrendPayload = async ({ leagueId, playerId }) => {
+const clampWeekWithinSeason = (snapshot, requestedWeek) => {
+  if (!snapshot) {
+    return null;
+  }
+  const minWeek = Number(snapshot.startWeek) || 1;
+  const rawMaxWeek = Number(snapshot.seasonEndWeek) || Number(snapshot.currentWeek) || minWeek;
+  const maxWeek = Math.max(rawMaxWeek, minWeek);
+  const fallbackWeek = Number(snapshot.currentWeek) || maxWeek;
+  const numericRequest = Number(requestedWeek);
+  if (Number.isFinite(numericRequest)) {
+    return Math.min(Math.max(numericRequest, minWeek), maxWeek);
+  }
+  return fallbackWeek;
+};
+
+const getPlayerTrendPayload = async ({ leagueId, playerId, week, attempt = 0 }) => {
   const [directory, snapshot] = await Promise.all([
     ensurePlayerDirectoryRecords(),
     ensureLeagueSnapshot(leagueId),
@@ -745,28 +777,37 @@ const getPlayerTrendPayload = async ({ leagueId, playerId }) => {
     throw new Error('League data is unavailable');
   }
 
+  const hasWeekMaps = snapshot.matchupsByWeek && snapshot.matchupRanksByWeek;
+  if (!hasWeekMaps && attempt === 0) {
+    await refreshLeagueSnapshots({ force: true, leagueIds: [leagueId] });
+    return getPlayerTrendPayload({ leagueId, playerId, week, attempt: 1 });
+  }
+
   const playerRecord = directory[playerId];
   if (!playerRecord) {
     throw new Error('Player metadata missing');
   }
 
+  const selectedWeek = clampWeekWithinSeason(snapshot, week);
   const weeklyEntries = snapshot.playerWeekly?.[playerId] || [];
-  const weeklySeries = buildWeeklySeries(
-    weeklyEntries,
-    snapshot.startWeek,
-    snapshot.currentWeek,
-    snapshot.seasonEndWeek
-  );
+  const weeklySeries = buildWeeklySeries(weeklyEntries, {
+    startWeek: snapshot.startWeek,
+    currentWeek: snapshot.currentWeek,
+    seasonEndWeek: snapshot.seasonEndWeek,
+    displayWeek: selectedWeek,
+  });
   const totalPoints = weeklySeries
     .filter((entry) => !entry.isFuture)
     .reduce((sum, entry) => sum + (Number(entry.points) || 0), 0);
   const positionRank = snapshot.positionRanks?.[playerId] || null;
-  const matchup = snapshot.matchups?.[playerId] || null;
-  const opponentRanks = snapshot.matchupRanks || null;
+  const matchupSource = snapshot.matchupsByWeek?.[selectedWeek] || snapshot.matchups || {};
+  const matchup = matchupSource?.[playerId] || null;
+  const opponentRanks = snapshot.matchupRanksByWeek?.[selectedWeek] || snapshot.matchupRanks || null;
 
   return {
     leagueId,
     playerId,
+    week: selectedWeek,
     weeklySeries,
     totalPoints,
     age: playerRecord.age,
@@ -935,7 +976,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === 'SLEEPER_PLUS_GET_PLAYER_TREND') {
     return respondAsync(
-      getPlayerTrendPayload({ leagueId: message.leagueId, playerId: message.playerId }),
+      getPlayerTrendPayload({ leagueId: message.leagueId, playerId: message.playerId, week: message.week }),
       sendResponse,
       'player trend'
     );

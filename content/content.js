@@ -4,6 +4,10 @@
   const SETTINGS_PARENT_CLASS = 'sleeper-plus-settings-parent';
   const BUTTON_CLASS = 'sleeper-plus-settings-button';
   const ENTRY_CLASS = 'sleeper-plus-settings-entry';
+  const REFRESH_INDICATOR_ID = 'sleeper-plus-refresh-indicator';
+  const REFRESH_INDICATOR_CLASS = 'sleeper-plus-refresh-indicator';
+  const REFRESH_INDICATOR_HIDDEN_CLASS = 'is-hidden';
+  const REFRESH_INDICATOR_TEXT = 'Refreshing player data for Sleeper+...';
   const SETTINGS_OBSERVER_CONFIG = { childList: true, subtree: true };
 
   const DEFAULT_CHAT_MAX_WIDTH = 400;
@@ -167,6 +171,70 @@
 
   const shouldDisplaySettingsButton = () => disableSleeperPlus || showSettingsButton;
 
+  const refreshIndicatorController = (() => {
+    let indicatorNode = null;
+    let desiredActive = false;
+
+    const syncIndicatorState = () => {
+      if (!indicatorNode) {
+        return;
+      }
+      if (desiredActive) {
+        indicatorNode.classList.remove(REFRESH_INDICATOR_HIDDEN_CLASS);
+      } else {
+        indicatorNode.classList.add(REFRESH_INDICATOR_HIDDEN_CLASS);
+      }
+    };
+
+    const ensureIndicatorNode = () => {
+      if (!shouldDisplaySettingsButton()) {
+        return null;
+      }
+      const buttonContainer = document.getElementById(BUTTON_CONTAINER_ID);
+      if (!buttonContainer || !buttonContainer.parentElement) {
+        return null;
+      }
+      if (indicatorNode && !indicatorNode.isConnected) {
+        indicatorNode = null;
+      }
+      if (!indicatorNode) {
+        indicatorNode = document.createElement('div');
+        indicatorNode.id = REFRESH_INDICATOR_ID;
+        indicatorNode.className = `${ENTRY_CLASS} ${REFRESH_INDICATOR_CLASS} ${REFRESH_INDICATOR_HIDDEN_CLASS}`;
+        indicatorNode.textContent = REFRESH_INDICATOR_TEXT;
+      }
+      if (indicatorNode.parentElement !== buttonContainer.parentElement) {
+        buttonContainer.parentElement.insertBefore(indicatorNode, buttonContainer);
+      }
+      syncIndicatorState();
+      return indicatorNode;
+    };
+
+    const setActive = (nextActive) => {
+      const normalized = !!nextActive;
+      if (desiredActive === normalized && indicatorNode) {
+        syncIndicatorState();
+        return;
+      }
+      desiredActive = normalized;
+      const node = ensureIndicatorNode();
+      if (!node) {
+        return;
+      }
+      syncIndicatorState();
+    };
+
+    const remove = () => {
+      if (indicatorNode && indicatorNode.parentElement) {
+        indicatorNode.parentElement.removeChild(indicatorNode);
+      }
+      indicatorNode = null;
+      desiredActive = false;
+    };
+
+    return { setActive, remove };
+  })();
+
   const ensureStyleElement = () => {
     let style = document.getElementById(STYLE_ELEMENT_ID);
     if (!style) {
@@ -220,6 +288,18 @@
       }
       #${BUTTON_CONTAINER_ID} .${BUTTON_CLASS}:active {
         transform: none;
+      }
+      .${REFRESH_INDICATOR_CLASS} {
+        font-size: 0.92rem;
+        font-weight: 500;
+        color: rgba(255, 255, 255, 0.85);
+        display: inline-flex;
+        align-items: center;
+        white-space: nowrap;
+        min-height: 32px;
+      }
+      .${REFRESH_INDICATOR_CLASS}.${REFRESH_INDICATOR_HIDDEN_CLASS} {
+        display: none !important;
       }
     `;
 
@@ -642,7 +722,25 @@
     const SCHEDULE_DATA_ATTRIBUTES = ['data-testid', 'data-test', 'data-qa'];
     const DATASET_PLAYER_ID = 'sleeperPlusPlayerId';
     const DATASET_STATE = 'sleeperPlusTrendState';
+    const DATASET_WEEK = 'sleeperPlusWeek';
     const SVG_NS = 'http://www.w3.org/2000/svg';
+    const WEEK_ACTIVE_SELECTORS = [
+      '[data-testid*="week"][aria-pressed="true"]',
+      '[data-testid*="week"][data-selected="true"]',
+      '.week-selector [aria-pressed="true"]',
+      '.week-selector button.is-selected',
+      '.week-selector button.selected',
+      '.week-selector .selected',
+      '.week-selector .selected-option',
+      '.week-select__option.is-selected',
+      '.week-select__option[aria-current="true"]',
+      '.week-select__option[aria-selected="true"]',
+    ];
+    const WEEK_FALLBACK_SELECTOR =
+      '[data-week],[data-leg],[data-testid*="week" i],[class*="week" i],[aria-label*="week" i],[title*="week" i]';
+    const WEEK_CLICK_TARGET_SELECTOR =
+      '[data-testid*="week"],.week-selector button,.week-select__option,[class*="week-selector"] button';
+    const WEEK_POLL_INTERVAL_MS = 1200;
 
     const processingMap = new WeakMap();
     const trendCache = new Map();
@@ -652,11 +750,19 @@
 
     let leagueId = '';
     let running = false;
+    let activeWeek = null;
     let rosterObserver = null;
     let observedRoster = null;
     let rosterWatchInterval = null;
     let scanScheduled = false;
     let visibilityListenerAttached = false;
+    let weekPollIntervalId = null;
+    let weekClickListenerAttached = false;
+    let pendingTrendRequests = 0;
+
+    const updateRefreshIndicator = () => {
+      refreshIndicatorController.setActive(running && pendingTrendRequests > 0);
+    };
 
     const normalizeNameToken = (value) =>
       (value || '')
@@ -664,6 +770,13 @@
         .trim()
         .toLowerCase()
         .replace(/\s+/g, ' ');
+
+    const getCurrentWeekNumber = () => (Number.isFinite(activeWeek) ? activeWeek : null);
+    const getCurrentWeekKey = () => (Number.isFinite(activeWeek) ? `week-${activeWeek}` : 'auto');
+    const buildTrendCacheKey = (playerId, weekKey) => {
+      const resolvedWeekKey = weekKey || getCurrentWeekKey();
+      return `${leagueId}:${resolvedWeekKey}:${playerId}`;
+    };
 
     const sendRuntimeRequest = (message, label) =>
       new Promise((resolve, reject) => {
@@ -721,8 +834,9 @@
       return request;
     };
 
-    const fetchTrendData = async (playerId) => {
-      const cacheKey = `${leagueId}:${playerId}`;
+    const fetchTrendData = async (playerId, weekContext = {}) => {
+      const weekKey = weekContext.cacheKey || getCurrentWeekKey();
+      const cacheKey = buildTrendCacheKey(playerId, weekKey);
       if (trendCache.has(cacheKey)) {
         return trendCache.get(cacheKey);
       }
@@ -730,10 +844,18 @@
         return inflightTrends.get(cacheKey);
       }
 
-      const request = sendRuntimeRequest(
-        { type: 'SLEEPER_PLUS_GET_PLAYER_TREND', leagueId, playerId },
-        'trend request'
-      )
+      const payload = { type: 'SLEEPER_PLUS_GET_PLAYER_TREND', leagueId, playerId };
+      const requestedWeek = Number.isFinite(weekContext.weekNumber)
+        ? weekContext.weekNumber
+        : getCurrentWeekNumber();
+      if (Number.isFinite(requestedWeek)) {
+        payload.week = requestedWeek;
+      }
+
+      pendingTrendRequests += 1;
+      updateRefreshIndicator();
+
+      const request = sendRuntimeRequest(payload, 'trend request')
         .then((result) => {
           inflightTrends.delete(cacheKey);
           trendCache.set(cacheKey, result);
@@ -742,6 +864,10 @@
         .catch((error) => {
           inflightTrends.delete(cacheKey);
           throw error;
+        })
+        .finally(() => {
+          pendingTrendRequests = Math.max(0, pendingTrendRequests - 1);
+          updateRefreshIndicator();
         });
 
       inflightTrends.set(cacheKey, request);
@@ -757,6 +883,7 @@
       item.querySelectorAll(`.${MATCHUP_INLINE_CLASS}`).forEach((node) => node.remove());
       delete item.dataset[DATASET_PLAYER_ID];
       delete item.dataset[DATASET_STATE];
+      delete item.dataset[DATASET_WEEK];
     };
 
     const cleanupAll = () => {
@@ -769,7 +896,19 @@
       document.querySelectorAll('.team-roster-item').forEach((item) => {
         delete item.dataset[DATASET_PLAYER_ID];
         delete item.dataset[DATASET_STATE];
+        delete item.dataset[DATASET_WEEK];
       });
+    };
+
+    const setItemWeekKey = (item, weekKey) => {
+      if (!item) {
+        return;
+      }
+      if (weekKey) {
+        item.dataset[DATASET_WEEK] = weekKey;
+      } else {
+        delete item.dataset[DATASET_WEEK];
+      }
     };
 
     const extractIdentity = (item) => {
@@ -1375,7 +1514,7 @@
       return numeric.toFixed(1);
     };
 
-    const renderMessage = (item, message) => {
+    const renderMessage = (item, message, { weekKey } = {}) => {
       removeTrend(item);
       const scheduleWrapper = findScheduleWrapper(item);
       const host = resolveTrendHost(scheduleWrapper, item);
@@ -1394,12 +1533,13 @@
       container.textContent = message;
       host.appendChild(container);
       item.dataset[DATASET_STATE] = 'error';
+      setItemWeekKey(item, weekKey || getCurrentWeekKey());
       if (showOpponentRanks) {
         ensureInlinePlaceholder(item, scheduleWrapper);
       }
     };
 
-    const renderTrend = (item, data) => {
+    const renderTrend = (item, data, { weekKey } = {}) => {
       removeTrend(item);
       const scheduleWrapper = findScheduleWrapper(item);
       const host = resolveTrendHost(scheduleWrapper, item);
@@ -1473,6 +1613,7 @@
 
       host.appendChild(container);
       item.dataset[DATASET_STATE] = 'ready';
+      setItemWeekKey(item, weekKey || getCurrentWeekKey());
     };
 
     const processRosterItem = (item) => {
@@ -1494,20 +1635,33 @@
       }
 
       const task = (async () => {
+        let weekContext = null;
         try {
           const resolvedId = await resolvePlayerId(identity);
           if (!resolvedId) {
-            renderMessage(item, 'Sleeper+ trend unavailable');
+            renderMessage(item, 'Sleeper+ trend unavailable', { weekKey: getCurrentWeekKey() });
             return;
           }
-          if (item.dataset[DATASET_PLAYER_ID] === resolvedId && item.dataset[DATASET_STATE] === 'ready') {
+          const currentWeekKey = getCurrentWeekKey();
+          if (
+            item.dataset[DATASET_PLAYER_ID] === resolvedId &&
+            item.dataset[DATASET_STATE] === 'ready' &&
+            item.dataset[DATASET_WEEK] === currentWeekKey
+          ) {
             return;
           }
           item.dataset[DATASET_PLAYER_ID] = resolvedId;
-          const trend = await fetchTrendData(resolvedId);
-          renderTrend(item, trend);
+          weekContext = { weekNumber: getCurrentWeekNumber(), cacheKey: currentWeekKey };
+          const trend = await fetchTrendData(resolvedId, weekContext);
+          if (weekContext.cacheKey !== getCurrentWeekKey()) {
+            scheduleScan();
+            return;
+          }
+          renderTrend(item, trend, { weekKey: weekContext.cacheKey });
         } catch (error) {
-          renderMessage(item, 'Sleeper+ trend unavailable');
+          renderMessage(item, 'Sleeper+ trend unavailable', {
+            weekKey: weekContext?.cacheKey || getCurrentWeekKey(),
+          });
           console.warn('Sleeper+ trend render failed', error);
         }
       })();
@@ -1541,6 +1695,159 @@
         scanScheduled = false;
         performScan();
       });
+    };
+
+    const withinWeekBounds = (value) => Number.isFinite(value) && value >= 1 && value <= 30;
+
+    const parseWeekFromString = (value) => {
+      if (value === null || value === undefined) {
+        return null;
+      }
+      const normalized = value.toString().trim();
+      if (!normalized) {
+        return null;
+      }
+      const direct = Number(normalized);
+      if (withinWeekBounds(direct)) {
+        return direct;
+      }
+      const keywordMatch = normalized.match(/(?:week|wk|leg)[^0-9]{0,10}(\d{1,2})/i);
+      if (keywordMatch) {
+        const candidate = Number(keywordMatch[1]);
+        if (withinWeekBounds(candidate)) {
+          return candidate;
+        }
+      }
+      const suffixMatch = normalized.match(/(\d{1,2})(?:st|nd|rd|th)?\s*(?:week|wk|leg)/i);
+      if (suffixMatch) {
+        const candidate = Number(suffixMatch[1]);
+        if (withinWeekBounds(candidate)) {
+          return candidate;
+        }
+      }
+      const digitsOnly = normalized.replace(/[^0-9]/g, '');
+      if (digitsOnly && digitsOnly.length <= 2) {
+        const candidate = Number(digitsOnly);
+        if (withinWeekBounds(candidate)) {
+          return candidate;
+        }
+      }
+      return null;
+    };
+
+    const extractWeekFromElement = (element) => {
+      if (!element) {
+        return null;
+      }
+      const attributeCandidates = [
+        element.getAttribute?.('data-week'),
+        element.getAttribute?.('data-leg'),
+        element.getAttribute?.('data-value'),
+        element.getAttribute?.('data-option'),
+        element.dataset?.week,
+        element.dataset?.leg,
+        element.dataset?.value,
+        element.dataset?.option,
+        element.id,
+        element.getAttribute?.('data-testid'),
+        element.getAttribute?.('aria-label'),
+        element.getAttribute?.('title'),
+        element.value,
+      ];
+      for (let index = 0; index < attributeCandidates.length; index += 1) {
+        const parsed = parseWeekFromString(attributeCandidates[index]);
+        if (withinWeekBounds(parsed)) {
+          return parsed;
+        }
+      }
+      const textContent = element.textContent?.trim();
+      if (textContent) {
+        const parsedText = parseWeekFromString(textContent);
+        if (withinWeekBounds(parsedText)) {
+          return parsedText;
+        }
+      }
+      return null;
+    };
+
+    const detectDisplayedWeek = () => {
+      for (let selectorIndex = 0; selectorIndex < WEEK_ACTIVE_SELECTORS.length; selectorIndex += 1) {
+        const selector = WEEK_ACTIVE_SELECTORS[selectorIndex];
+        if (!selector) {
+          continue;
+        }
+        const nodes = document.querySelectorAll(selector);
+        for (let nodeIndex = 0; nodeIndex < nodes.length; nodeIndex += 1) {
+          const week = extractWeekFromElement(nodes[nodeIndex]);
+          if (withinWeekBounds(week)) {
+            return week;
+          }
+        }
+      }
+      const fallbackNodes = Array.from(document.querySelectorAll(WEEK_FALLBACK_SELECTOR)).slice(0, 50);
+      for (let index = 0; index < fallbackNodes.length; index += 1) {
+        const week = extractWeekFromElement(fallbackNodes[index]);
+        if (withinWeekBounds(week)) {
+          return week;
+        }
+      }
+      return null;
+    };
+
+    const pollDisplayedWeek = () => {
+      if (!running) {
+        return;
+      }
+      const detectedWeek = detectDisplayedWeek();
+      if (!withinWeekBounds(detectedWeek) || detectedWeek === activeWeek) {
+        return;
+      }
+      activeWeek = detectedWeek;
+      cleanupAll();
+      scheduleScan();
+    };
+
+    const handleWeekSelectorClick = (event) => {
+      const target = event?.target instanceof Element ? event.target.closest(WEEK_CLICK_TARGET_SELECTOR) : null;
+      if (!target) {
+        return;
+      }
+      window.requestAnimationFrame(() => pollDisplayedWeek());
+      window.setTimeout(() => pollDisplayedWeek(), 250);
+    };
+
+    const attachWeekClickListener = () => {
+      if (weekClickListenerAttached) {
+        return;
+      }
+      document.addEventListener('click', handleWeekSelectorClick, true);
+      weekClickListenerAttached = true;
+    };
+
+    const detachWeekClickListener = () => {
+      if (!weekClickListenerAttached) {
+        return;
+      }
+      document.removeEventListener('click', handleWeekSelectorClick, true);
+      weekClickListenerAttached = false;
+    };
+
+    const startWeekWatch = () => {
+      if (weekPollIntervalId) {
+        return;
+      }
+      pollDisplayedWeek();
+      weekPollIntervalId = window.setInterval(() => pollDisplayedWeek(), WEEK_POLL_INTERVAL_MS);
+      attachWeekClickListener();
+    };
+
+    const stopWeekWatch = () => {
+      if (weekPollIntervalId) {
+        window.clearInterval(weekPollIntervalId);
+        weekPollIntervalId = null;
+      }
+      detachWeekClickListener();
+      activeWeek = null;
     };
 
     const shouldReactToMutation = (mutation) => {
@@ -1655,6 +1962,7 @@
       running = true;
       attachVisibilityListener();
       startRosterWatch();
+      startWeekWatch();
       scheduleScan();
     };
 
@@ -1662,13 +1970,19 @@
       if (!running) {
         cleanupAll();
         stopRosterWatch();
+        stopWeekWatch();
         detachVisibilityListener();
+        pendingTrendRequests = 0;
+        updateRefreshIndicator();
         return;
       }
       running = false;
       stopRosterWatch();
+      stopWeekWatch();
       detachVisibilityListener();
       cleanupAll();
+      pendingTrendRequests = 0;
+      updateRefreshIndicator();
     };
 
     const setLeagueContext = (nextLeagueId) => {
@@ -1676,8 +1990,12 @@
         return;
       }
       leagueId = nextLeagueId || '';
+      activeWeek = null;
+      cleanupAll();
       trendCache.clear();
       inflightTrends.clear();
+      pendingTrendRequests = 0;
+      updateRefreshIndicator();
       if (!leagueId) {
         stop();
       } else if (running) {
@@ -1826,6 +2144,7 @@
 
     const parent = existing.parentElement;
     existing.remove();
+    refreshIndicatorController.remove();
 
     if (parent && parent.classList.contains(SETTINGS_PARENT_CLASS)) {
       const remaining = parent.querySelector(`#${BUTTON_CONTAINER_ID}`);
