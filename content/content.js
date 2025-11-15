@@ -13,6 +13,8 @@
   const DEFAULT_SHOW_OPPONENT_RANKS = true;
   const MIN_CHAT_MAX_WIDTH = 200;
   const MAX_CHAT_MAX_WIDTH = 800;
+  const CENTER_PANEL_SPARKLINE_THRESHOLD = 800;
+  const COMPACT_PANEL_CLASS = 'sleeper-plus-compact-center';
 
   const DEFAULT_SETTINGS = {
     leagueIds: [],
@@ -32,6 +34,12 @@
   let isActive = false;
   let settingsObserver = null;
   let currentBaseUrl = '';
+  let centerPanelResizeObserver = null;
+  let observedCenterPanel = null;
+  let centerPanelWatchIntervalId = null;
+  let windowResizeListenerAttached = false;
+  let pendingCenterPanelResizeFrame = null;
+  let isCenterPanelCompact = false;
 
   const sanitizeChatWidth = (value) => {
     const numeric = Number(value);
@@ -443,8 +451,165 @@
 
     const buttonStyles = shouldDisplaySettingsButton() ? getButtonStyleBlock() : '';
     const trendStyles = enableTrendOverlays ? getTrendStyleBlock() : '';
+     const compactStyles = enableTrendOverlays
+      ? `.${COMPACT_PANEL_CLASS} .sleeper-plus-trend__chart,
+        .${COMPACT_PANEL_CLASS} .sleeper-plus-trend__meta {
+          display: none !important;
+        }
+        .${COMPACT_PANEL_CLASS} .sleeper-plus-trend-row {
+          display: block !important;
+          gap: 0 !important;
+        }
+        .${COMPACT_PANEL_CLASS} .sleeper-plus-trend {
+          margin-left: 0 !important;
+          min-width: 0 !important;
+          max-width: 100% !important;
+        }
+        .${COMPACT_PANEL_CLASS} .sleeper-plus-trend__stack {
+          padding-left: 0 !important;
+          border-left: none !important;
+        }`
+      : '';
 
-    style.textContent = `${layoutStyles}${buttonStyles}${trendStyles}`;
+    style.textContent = `${layoutStyles}${buttonStyles}${trendStyles}${compactStyles}`;
+  };
+
+  const setCompactCenterPanelState = (shouldCompact) => {
+    if (isCenterPanelCompact === shouldCompact) {
+      return;
+    }
+    isCenterPanelCompact = shouldCompact;
+    if (!document.documentElement) {
+      return;
+    }
+    document.documentElement.classList.toggle(COMPACT_PANEL_CLASS, shouldCompact);
+  };
+
+  const getCenterPanelWidth = (panel) => {
+    if (!panel) {
+      return 0;
+    }
+    const rect = panel.getBoundingClientRect();
+    if (rect && typeof rect.width === 'number') {
+      return rect.width;
+    }
+    return panel.offsetWidth || 0;
+  };
+
+  const evaluateCenterPanelWidth = (panel = observedCenterPanel) => {
+    if (!isActive || !panel) {
+      setCompactCenterPanelState(false);
+      return;
+    }
+    const width = getCenterPanelWidth(panel);
+    const shouldCompact =
+      Number.isFinite(width) && width > 0 && width < CENTER_PANEL_SPARKLINE_THRESHOLD;
+    setCompactCenterPanelState(shouldCompact);
+  };
+
+  const handleCenterPanelResize = (entries) => {
+    if (!isActive) {
+      return;
+    }
+    entries.forEach((entry) => {
+      if (entry.target === observedCenterPanel) {
+        evaluateCenterPanelWidth(entry.target);
+      }
+    });
+  };
+
+  const ensureCenterPanelObserver = () => {
+    if (!centerPanelResizeObserver && typeof ResizeObserver === 'function') {
+      centerPanelResizeObserver = new ResizeObserver(handleCenterPanelResize);
+    }
+    return centerPanelResizeObserver;
+  };
+
+  const disconnectCenterPanelObserver = () => {
+    if (centerPanelResizeObserver && observedCenterPanel) {
+      centerPanelResizeObserver.unobserve(observedCenterPanel);
+    }
+    observedCenterPanel = null;
+  };
+
+  const watchCenterPanel = () => {
+    if (!isActive) {
+      return;
+    }
+    const panel = document.querySelector('.center-panel');
+    if (!panel) {
+      disconnectCenterPanelObserver();
+      setCompactCenterPanelState(false);
+      return;
+    }
+    if (panel === observedCenterPanel) {
+      evaluateCenterPanelWidth(panel);
+      return;
+    }
+    disconnectCenterPanelObserver();
+    const observer = ensureCenterPanelObserver();
+    if (observer) {
+      observer.observe(panel);
+    }
+    observedCenterPanel = panel;
+    evaluateCenterPanelWidth(panel);
+  };
+
+  const handleWindowResize = () => {
+    if (pendingCenterPanelResizeFrame) {
+      return;
+    }
+    pendingCenterPanelResizeFrame = window.requestAnimationFrame(() => {
+      pendingCenterPanelResizeFrame = null;
+      if (!isActive) {
+        setCompactCenterPanelState(false);
+        return;
+      }
+      if (observedCenterPanel) {
+        evaluateCenterPanelWidth(observedCenterPanel);
+      } else {
+        watchCenterPanel();
+      }
+    });
+  };
+
+  const attachCenterPanelResizeListener = () => {
+    if (!windowResizeListenerAttached) {
+      window.addEventListener('resize', handleWindowResize);
+      windowResizeListenerAttached = true;
+    }
+  };
+
+  const detachCenterPanelResizeListener = () => {
+    if (windowResizeListenerAttached) {
+      window.removeEventListener('resize', handleWindowResize);
+      windowResizeListenerAttached = false;
+    }
+    if (pendingCenterPanelResizeFrame) {
+      window.cancelAnimationFrame(pendingCenterPanelResizeFrame);
+      pendingCenterPanelResizeFrame = null;
+    }
+  };
+
+  const startCenterPanelMonitor = () => {
+    if (!isActive) {
+      return;
+    }
+    attachCenterPanelResizeListener();
+    watchCenterPanel();
+    if (!centerPanelWatchIntervalId) {
+      centerPanelWatchIntervalId = window.setInterval(() => watchCenterPanel(), 1500);
+    }
+  };
+
+  const stopCenterPanelMonitor = () => {
+    if (centerPanelWatchIntervalId) {
+      window.clearInterval(centerPanelWatchIntervalId);
+      centerPanelWatchIntervalId = null;
+    }
+    detachCenterPanelResizeListener();
+    disconnectCenterPanelObserver();
+    setCompactCenterPanelState(false);
   };
 
   const trendOverlayManager = (() => {
@@ -1717,14 +1882,17 @@
   const activateExtension = () => {
     if (isActive) {
       updateLayoutStyles();
+      startCenterPanelMonitor();
       return;
     }
 
     isActive = true;
     updateLayoutStyles();
+    startCenterPanelMonitor();
   };
 
   const deactivateExtension = () => {
+    stopCenterPanelMonitor();
     if (!isActive) {
       if (shouldDisplaySettingsButton()) {
         applyButtonOnlyStyles();
