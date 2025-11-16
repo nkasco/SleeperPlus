@@ -6,6 +6,7 @@ const STORAGE_KEYS = {
   STATS: 'sleeperPlus:stats',
   METRICS: 'sleeperPlus:metrics',
 };
+const LAST_REFRESH_METADATA_KEY = 'sleeperPlus:lastDataRefresh';
 
 const API_BASE_URL = 'https://api.sleeper.app/v1';
 const PROJECTION_API_BASE_URL = 'https://api.sleeper.com';
@@ -37,6 +38,16 @@ const asyncChrome = {
       });
     });
   },
+};
+
+const setLastRefreshMetadata = async ({ source = 'auto', leagueCount = 0 } = {}) => {
+  await asyncChrome.storageLocalSet({
+    [LAST_REFRESH_METADATA_KEY]: {
+      timestamp: Date.now(),
+      source,
+      leagueCount,
+    },
+  });
 };
 
 const buildCacheEnvelope = (payload) => ({
@@ -663,6 +674,11 @@ const refreshLeagueSnapshots = async ({ force = false, leagueIds } = {}) => {
     summary: buildMetricsSummary(snapshots, playerDirectory),
   };
   await setCacheEnvelope(STORAGE_KEYS.METRICS, metricsPayload);
+
+  await setLastRefreshMetadata({
+    source: force ? 'manual' : 'auto',
+    leagueCount: ids.length,
+  });
 
   return getCacheEnvelope(STORAGE_KEYS.STATS);
 };

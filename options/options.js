@@ -6,6 +6,7 @@
 	const DEFAULT_SHOW_OPPONENT_RANKS = true;
 	const MIN_CHAT_MAX_WIDTH = 200;
 	const MAX_CHAT_MAX_WIDTH = 800;
+	const LAST_REFRESH_STORAGE_KEY = 'sleeperPlus:lastDataRefresh';
 
 	const form = document.getElementById('league-form');
 	const leagueInput = document.getElementById('league-id');
@@ -22,6 +23,7 @@
 	const clearButton = document.getElementById('clear-button');
 	const refreshDataButton = document.getElementById('refresh-data-button');
 	const refreshDataStatus = document.getElementById('refresh-data-status');
+	const refreshDataLastRun = document.getElementById('refresh-data-last-run');
 
 	let redirectTimeoutId = null;
 	let lastAddedLeagueId = '';
@@ -71,6 +73,59 @@
 		refreshDataButton.textContent = isBusy ? 'Refreshing…' : 'Refresh Sleeper data';
 		syncRefreshButtonState();
 	};
+
+	const getLastRefreshMetadata = () => {
+		return new Promise((resolve) => {
+			chrome.storage.local.get([LAST_REFRESH_STORAGE_KEY], (result) => {
+				if (chrome.runtime.lastError) {
+					console.warn('Sleeper+ unable to read refresh metadata', chrome.runtime.lastError);
+					resolve(null);
+					return;
+				}
+				resolve(result?.[LAST_REFRESH_STORAGE_KEY] || null);
+			});
+		});
+	};
+
+	const formatRefreshLabel = (meta) => {
+		if (!meta || !meta.timestamp) {
+			return 'Sleeper data has not been refreshed yet.';
+		}
+		const formatter = new Intl.DateTimeFormat(undefined, {
+			dateStyle: 'medium',
+			timeStyle: 'short',
+		});
+		const formatted = formatter.format(new Date(meta.timestamp));
+		const sourceLabel = meta.source === 'manual' ? 'manual refresh' : 'auto refresh';
+		const leagueCount = Number(meta.leagueCount);
+		const leagueSuffix = Number.isFinite(leagueCount) && leagueCount > 0
+			? ` across ${leagueCount} league${leagueCount === 1 ? '' : 's'}`
+			: '';
+		return `Last refreshed ${formatted} via ${sourceLabel}${leagueSuffix}.`;
+	};
+
+	const renderLastRefreshMetadata = (meta) => {
+		if (!refreshDataLastRun) {
+			return;
+		}
+		refreshDataLastRun.textContent = formatRefreshLabel(meta);
+	};
+
+	const syncLastRefreshMetadata = async () => {
+		const meta = await getLastRefreshMetadata();
+		renderLastRefreshMetadata(meta);
+	};
+
+	if (refreshDataLastRun) {
+		renderLastRefreshMetadata(null);
+	}
+
+	chrome.storage.onChanged.addListener((changes, areaName) => {
+		if (areaName !== 'local' || !changes[LAST_REFRESH_STORAGE_KEY]) {
+			return;
+		}
+		renderLastRefreshMetadata(changes[LAST_REFRESH_STORAGE_KEY].newValue || null);
+	});
 
 	const sendRuntimeMessage = (payload) => {
 		return new Promise((resolve, reject) => {
@@ -521,6 +576,7 @@
 			});
 			setRefreshStatus('Data refresh requested. Updates may take a moment.', 'success');
 			withMessage('Sleeper data refresh requested.', 'success', 4000);
+			await syncLastRefreshMetadata();
 		} catch (error) {
 			console.error('Sleeper+ manual refresh failed', error);
 			setRefreshStatus('Refresh failed. Check the console for details.', 'error');
@@ -549,6 +605,7 @@
 			enableTrendsInput.checked = state.enableTrendOverlays;
 			showOpponentRanksInput.checked = state.showOpponentRanks;
 			setRefreshStatus('');
+			await syncLastRefreshMetadata();
 
 			if (state.leagueIds.length === 0) {
 				showMessage('Sleeper+ is inactive until you add a league ID.', 'error');
