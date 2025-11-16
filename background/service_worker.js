@@ -438,9 +438,12 @@ const serializeWeeklyContainer = (container) => {
       .sort((a, b) => a - b)
       .map((week) => ({
         week,
-        points: Number(weeklyData.actual?.[week]) || 0,
+        hasActual: Object.prototype.hasOwnProperty.call(weeklyData.actual || {}, week),
+        points: Object.prototype.hasOwnProperty.call(weeklyData.actual || {}, week)
+          ? Number(weeklyData.actual?.[week]) || 0
+          : 0,
         projected:
-          weeklyData.projected?.[week] !== undefined
+          Object.prototype.hasOwnProperty.call(weeklyData.projected || {}, week)
             ? Number(weeklyData.projected?.[week])
             : null,
       }));
@@ -462,8 +465,12 @@ const fetchLeagueSnapshot = async (leagueId, playerDirectory, sharedState) => {
   const stateSeason = String(state.season || state.league_season || '') || null;
   const projectionSeason = leagueSeason || stateSeason;
   const stateWeek = Number(state.display_week ?? state.week) || startWeek;
+  const rawStatsWeek = Number(state.week);
   const isSameSeason = !leagueSeason || !stateSeason ? true : leagueSeason === stateSeason;
   const currentWeek = isSameSeason ? Math.min(stateWeek, playoffWeek) : playoffWeek;
+  const statsWeek = isSameSeason
+    ? Math.max(Math.min(Number.isFinite(rawStatsWeek) ? rawStatsWeek : stateWeek, playoffWeek), startWeek - 1)
+    : playoffWeek;
   const seasonType = (isSameSeason ? state.season_type : null) || league.settings?.season_type || 'regular';
   const seasonEndWeek = Math.max(currentWeek, NFL_REGULAR_SEASON_WEEKS);
 
@@ -483,7 +490,7 @@ const fetchLeagueSnapshot = async (leagueId, playerDirectory, sharedState) => {
       await delay(150);
     }
 
-    const shouldFetchActuals = week <= currentWeek;
+    const shouldFetchActuals = week <= statsWeek;
     const matchupRequest = shouldFetchActuals
       ? fetchJson(`/league/${leagueId}/matchups/${week}`)
       : Promise.resolve([]);
@@ -501,8 +508,13 @@ const fetchLeagueSnapshot = async (leagueId, playerDirectory, sharedState) => {
       matchups.forEach((entry) => {
         const points = entry.players_points || {};
         Object.entries(points).forEach(([playerId, weeklyPoints]) => {
+          if (weeklyPoints === undefined || weeklyPoints === null) {
+            return;
+          }
           const record = ensureWeeklyRecord(playerWeeklySource, playerId);
-          record.actual[week] = (Number(weeklyPoints) || 0) + (record.actual[week] || 0);
+          const numericPoints = Number(weeklyPoints);
+          const safePoints = Number.isFinite(numericPoints) ? numericPoints : 0;
+          record.actual[week] = safePoints + (record.actual[week] || 0);
         });
       });
     }
@@ -565,6 +577,7 @@ const fetchLeagueSnapshot = async (leagueId, playerDirectory, sharedState) => {
     season: league.season,
     startWeek,
     currentWeek,
+    statsWeek,
     seasonEndWeek,
     playerWeekly,
     positionRanks,
@@ -714,15 +727,19 @@ const findBestPlayerMatch = (directory, query) => {
   return fallbackMatch;
 };
 
-const buildWeeklySeries = (entries, { startWeek, currentWeek, seasonEndWeek, displayWeek }) => {
+const buildWeeklySeries = (entries, { startWeek, currentWeek, seasonEndWeek, displayWeek, statsWeek }) => {
   const actualMap = new Map();
   const projectedMap = new Map();
+  const actualWeeks = new Set();
   (entries || []).forEach((entry) => {
     const week = Number(entry.week);
     if (!Number.isFinite(week)) {
       return;
     }
-    actualMap.set(week, Number(entry.points) || 0);
+    if (entry.hasActual) {
+      actualWeeks.add(week);
+      actualMap.set(week, Number(entry.points) || 0);
+    }
     if (entry.projected !== undefined && entry.projected !== null) {
       projectedMap.set(week, Number(entry.projected));
     }
@@ -730,6 +747,9 @@ const buildWeeklySeries = (entries, { startWeek, currentWeek, seasonEndWeek, dis
 
   const normalizedStartWeek = Number(startWeek) || 1;
   const normalizedCurrentWeek = Number(currentWeek) || normalizedStartWeek;
+  const normalizedStatsWeek = Number.isFinite(Number(statsWeek))
+    ? Math.max(Number(statsWeek), normalizedStartWeek - 1)
+    : normalizedCurrentWeek;
   const normalizedSeasonEnd = Math.max(
     Number(seasonEndWeek) || normalizedCurrentWeek,
     normalizedCurrentWeek
@@ -742,11 +762,14 @@ const buildWeeklySeries = (entries, { startWeek, currentWeek, seasonEndWeek, dis
 
   const series = [];
   for (let week = normalizedStartWeek; week <= finalWeek; week += 1) {
+    const hasActual = actualWeeks.has(week) && week <= normalizedStatsWeek;
+    const resolvedPoints = hasActual ? actualMap.get(week) ?? 0 : 0;
     series.push({
       week,
-      points: actualMap.get(week) ?? 0,
+      points: resolvedPoints,
       projected: projectedMap.has(week) ? projectedMap.get(week) : null,
       isFuture: week > futureMarker,
+      hasActual,
     });
   }
   return series;
@@ -796,6 +819,7 @@ const getPlayerTrendPayload = async ({ leagueId, playerId, week, attempt = 0 }) 
     currentWeek: snapshot.currentWeek,
     seasonEndWeek: snapshot.seasonEndWeek,
     displayWeek: sparklineWeek,
+    statsWeek: snapshot.statsWeek,
   });
   const totalPoints = weeklySeries
     .filter((entry) => !entry.isFuture)

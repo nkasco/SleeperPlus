@@ -720,6 +720,57 @@
     ];
     const SCHEDULE_KEYWORDS = ['schedule', 'matchup', 'game', 'bye', 'status'];
     const SCHEDULE_DATA_ATTRIBUTES = ['data-testid', 'data-test', 'data-qa'];
+    const GAME_STATE = {
+      PRE: 'pre',
+      LIVE: 'live',
+      FINAL: 'final',
+      BYE: 'bye',
+    };
+
+    const normalizeScheduleText = (wrapper) =>
+      (wrapper?.textContent || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+
+    const isPostKickoffState = (state) =>
+      state === GAME_STATE.LIVE || state === GAME_STATE.FINAL || state === GAME_STATE.BYE;
+
+    const isPregameState = (state) => state === GAME_STATE.PRE;
+
+    const detectScheduleGameState = (wrapper) => {
+      const text = normalizeScheduleText(wrapper);
+      if (!text) {
+        return null;
+      }
+      if (/\bbye\b/i.test(text)) {
+        return GAME_STATE.BYE;
+      }
+      if (/\b(final(?:\/ot)?|ended|complete|postponed|canceled|cancelled)\b/i.test(text)) {
+        return GAME_STATE.FINAL;
+      }
+      if (
+        /\blive\b/i.test(text) ||
+        /\bin progress\b/i.test(text) ||
+        /\b1st\b/i.test(text) ||
+        /\b2nd\b/i.test(text) ||
+        /\b3rd\b/i.test(text) ||
+        /\b4th\b/i.test(text) ||
+        /\bquarter\b/i.test(text) ||
+        /\bhalftime\b/i.test(text) ||
+        /\bot\b/i.test(text)
+      ) {
+        return GAME_STATE.LIVE;
+      }
+      if (
+        /\b(?:sun|mon|tue|wed|thu|fri|sat)\b/i.test(text) ||
+        /\b[ap]m\b/i.test(text) ||
+        /\d{1,2}:\d{2}/.test(text)
+      ) {
+        return GAME_STATE.PRE;
+      }
+      return null;
+    };
     const DATASET_PLAYER_ID = 'sleeperPlusPlayerId';
     const DATASET_STATE = 'sleeperPlusTrendState';
     const DATASET_WEEK = 'sleeperPlusWeek';
@@ -1289,19 +1340,24 @@
       return true;
     };
 
-    const buildSeriesSignature = (series = []) =>
-      series
+    const buildSeriesSignature = (series = [], weekNumber = null, { gameState } = {}) => {
+      const entries = series
         .map((entry = {}) => {
           const week = entry.week ?? '';
           const actual = Number(entry.points) || 0;
           const projected =
             entry.projected === null || entry.projected === undefined ? 'null' : Number(entry.projected) || 0;
           const isFuture = entry.isFuture ? '1' : '0';
-          return `${week}:${actual}:${projected}:${isFuture}`;
+          const hasActual = entry.hasActual ? '1' : '0';
+          return `${week}:${actual}:${projected}:${isFuture}:${hasActual}`;
         })
         .join('|');
+      const normalizedWeek = Number.isFinite(weekNumber) ? weekNumber : 'auto';
+      const normalizedState = gameState || 'unknown';
+      return `${normalizedWeek}::${normalizedState}::${entries}`;
+    };
 
-    const getPlayerSparkline = (playerId, series) => {
+    const getPlayerSparkline = (playerId, series, { weekNumber, gameState } = {}) => {
       if (!series || series.length === 0) {
         if (playerId) {
           sparklineCache.delete(playerId);
@@ -1309,14 +1365,14 @@
         return null;
       }
       if (!playerId) {
-        return createSparkline(series);
+        return createSparkline(series, weekNumber, { gameState });
       }
-      const signature = buildSeriesSignature(series);
+      const signature = buildSeriesSignature(series, weekNumber, { gameState });
       const cached = sparklineCache.get(playerId);
       if (cached?.signature === signature && cached.svg) {
         return cached.svg.cloneNode(true);
       }
-      const sparkline = createSparkline(series);
+      const sparkline = createSparkline(series, weekNumber, { gameState });
       if (!sparkline) {
         return null;
       }
@@ -1324,11 +1380,78 @@
       return sparkline;
     };
 
-    const buildSparklinePoints = (series, width, height) => {
+    const inferHasActual = (entry, actualValue, context = {}) => {
+      const currentWeekNumber = Number.isFinite(context.currentWeekNumber)
+        ? Number(context.currentWeekNumber)
+        : null;
+      const normalizedState = (context.gameState || '').toLowerCase();
+      const hasStateInfo = Boolean(normalizedState);
+      const gameStarted = isPostKickoffState(normalizedState);
+      const pregameState = isPregameState(normalizedState);
+      const isCurrentWeek = isCurrentWeekEntry(entry, currentWeekNumber);
+
+      if (!isCurrentWeek) {
+        return entry.hasActual !== undefined ? Boolean(entry.hasActual) : true;
+      }
+
+      if (entry.hasActual !== undefined) {
+        if (gameStarted) {
+          return true;
+        }
+        if (pregameState) {
+          return false;
+        }
+        if (!hasStateInfo) {
+          if (!Number.isFinite(actualValue)) {
+            return false;
+          }
+          return actualValue !== 0;
+        }
+        return Boolean(entry.hasActual);
+      }
+
+      if (!Number.isFinite(actualValue)) {
+        return false;
+      }
+
+      if (gameStarted) {
+        return true;
+      }
+
+      if (!hasStateInfo) {
+        return actualValue !== 0;
+      }
+
+      return false;
+    };
+
+    const resolveEntryValue = (entry, context = {}) => {
+      if (!entry) {
+        return 0;
+      }
+      const actual = Number(entry.points);
+      const projected = Number(entry.projected);
+      const hasActualData = inferHasActual(entry, actual, context);
+      const isCurrentWeek = isCurrentWeekEntry(entry, context.currentWeekNumber);
+      const shouldUseProjection = isCurrentWeek && !hasActualData;
+      if (shouldUseProjection && Number.isFinite(projected)) {
+        return projected;
+      }
+      if (Number.isFinite(actual)) {
+        return actual;
+      }
+      if (Number.isFinite(projected)) {
+        return projected;
+      }
+      return 0;
+    };
+
+    const buildSparklinePoints = (series, width, height, context = {}) => {
       if (!series || series.length === 0) {
         return { linePoints: '', areaPoints: '', coords: [] };
       }
-      const actualValues = series.map((entry) => Number(entry.points) || 0);
+      const resolvedValues = series.map((entry) => resolveEntryValue(entry, context));
+      const actualValues = resolvedValues;
       const projectionValues = series
         .map((entry) => (entry.projected !== null && entry.projected !== undefined ? Number(entry.projected) : null))
         .filter((value) => Number.isFinite(value));
@@ -1339,7 +1462,7 @@
       const stepX = series.length > 1 ? width / (series.length - 1) : width;
       const coords = series.map((entry, index) => {
         const x = Number((index * stepX).toFixed(2));
-        const normalized = (Number(entry.points) - min) / range;
+        const normalized = (resolvedValues[index] - min) / range;
         const y = Number((height - normalized * height).toFixed(2));
         return { x, y };
       });
@@ -1358,32 +1481,77 @@
       return `${pathPoints} ${lastX},${height} ${firstX},${height}`;
     };
 
+    const CURRENT_WEEK_COLOR = '#fbbf24';
     const LINE_COLORS = {
       over: '#22c55e',
       under: '#ef4444',
       neutral: '#3b82f6',
       future: '#94a3b8',
+      current: CURRENT_WEEK_COLOR,
     };
 
-    const classifyWeek = (entry) => {
-      if (!entry || entry.projected === null || entry.projected === undefined) {
+    const parseSeriesWeekNumber = (entry) => {
+      if (!entry || entry.week === null || entry.week === undefined) {
+        return null;
+      }
+      if (Number.isFinite(entry.week)) {
+        return Number(entry.week);
+      }
+      const numeric = Number(entry.week);
+      if (Number.isFinite(numeric)) {
+        return numeric;
+      }
+      if (typeof entry.week === 'string') {
+        const match = entry.week.match(/\d+/);
+        if (match) {
+          const parsed = Number(match[0]);
+          if (Number.isFinite(parsed)) {
+            return parsed;
+          }
+        }
+      }
+      return null;
+    };
+
+    const isCurrentWeekEntry = (entry, currentWeekNumber) => {
+      if (!Number.isFinite(currentWeekNumber)) {
+        return false;
+      }
+      const entryWeek = parseSeriesWeekNumber(entry);
+      return Number.isFinite(entryWeek) && entryWeek === currentWeekNumber;
+    };
+
+    const classifyWeek = (entry, currentWeekNumber, context = {}) => {
+      if (!entry) {
         return 'neutral';
       }
-      const actual = Number(entry.points) || 0;
-      const projected = Number(entry.projected) || 0;
-      return actual >= projected ? 'over' : 'under';
+      const actual = Number(entry.points);
+      const projectedValue =
+        entry.projected === null || entry.projected === undefined ? null : Number(entry.projected);
+      const normalizedProjected = Number.isFinite(projectedValue) ? projectedValue : null;
+      const classificationContext = { ...context, currentWeekNumber };
+      const isCurrentWeek = isCurrentWeekEntry(entry, currentWeekNumber);
+      const hasActualData = inferHasActual(entry, actual, classificationContext);
+      if (isCurrentWeek && !hasActualData) {
+        return 'current';
+      }
+      if (normalizedProjected === null) {
+        return 'neutral';
+      }
+      const resolvedActual = Number.isFinite(actual) ? actual : 0;
+      return resolvedActual >= normalizedProjected ? 'over' : 'under';
     };
 
-    const segmentLinePoints = (coords, series) => {
+    const segmentLinePoints = (coords, series, currentWeekNumber, context = {}) => {
       if (!coords || coords.length === 0 || !series || series.length === 0) {
         return [];
       }
       const segments = [];
-      let currentClass = classifyWeek(series[0]);
+      let currentClass = classifyWeek(series[0], currentWeekNumber, context);
       let currentPoints = [coords[0]];
 
       for (let index = 1; index < coords.length; index += 1) {
-        const nextClass = classifyWeek(series[index]);
+        const nextClass = classifyWeek(series[index], currentWeekNumber, context);
         const point = coords[index];
         if (nextClass !== currentClass) {
           if (currentPoints.length >= 2) {
@@ -1407,13 +1575,17 @@
     // the full current-season schedule, sourcing projections for future weeks,
     // rendering those projected-only points/segments in teal, and highlighting
     // the active week marker/segment in gold for quick visual orientation.
-    const createSparkline = (series) => {
+    const createSparkline = (series, overrideWeekNumber = null, { gameState } = {}) => {
       if (!series || series.length === 0) {
         return null;
       }
       const width = 220;
       const height = 48;
-      const { areaPoints, coords, min, range } = buildSparklinePoints(series, width, height);
+      const currentWeekNumber = Number.isFinite(overrideWeekNumber)
+        ? Number(overrideWeekNumber)
+        : getCurrentWeekNumber();
+      const pointContext = { currentWeekNumber, gameState };
+      const { areaPoints, coords, min, range } = buildSparklinePoints(series, width, height, pointContext);
       if (!coords || coords.length === 0) {
         return null;
       }
@@ -1434,9 +1606,9 @@
         svg.appendChild(area);
       }
 
-      const segments = segmentLinePoints(actualCoords, actualSeries);
+      const segments = segmentLinePoints(actualCoords, actualSeries, currentWeekNumber, pointContext);
       if (segments.length === 0 && actualCoords.length > 0) {
-        const fallbackClass = classifyWeek(actualSeries[0]);
+        const fallbackClass = classifyWeek(actualSeries[0], currentWeekNumber, pointContext);
         const fallbackPoints =
           actualCoords.length === 1 ? [actualCoords[0], actualCoords[0]] : actualCoords;
         segments.push({ classification: fallbackClass, points: fallbackPoints });
@@ -1527,7 +1699,7 @@
         } else {
           circle.setAttribute('cx', x);
           circle.setAttribute('cy', y);
-          const classification = classifyWeek(dataPoint);
+          const classification = classifyWeek(dataPoint, currentWeekNumber, pointContext);
           circle.classList.add('sleeper-plus-dot', classification);
           circle.style.fill = LINE_COLORS[classification] || LINE_COLORS.neutral;
         }
@@ -1553,6 +1725,7 @@
     const renderMessage = (item, message, { weekKey } = {}) => {
       removeTrend(item);
       const scheduleWrapper = findScheduleWrapper(item);
+      const localGameState = detectScheduleGameState(scheduleWrapper);
       const host = resolveTrendHost(scheduleWrapper, item);
       const trendRowHost =
         (host instanceof Element ? host.closest('.row') : null) ||
@@ -1578,6 +1751,7 @@
     const renderTrend = (item, data, { weekKey } = {}) => {
       removeTrend(item);
       const scheduleWrapper = findScheduleWrapper(item);
+      const localGameState = detectScheduleGameState(scheduleWrapper);
       const host = resolveTrendHost(scheduleWrapper, item);
       const trendRowHost =
         (host instanceof Element ? host.closest('.row') : null) ||
@@ -1642,7 +1816,10 @@
       const chartWrapper = document.createElement('div');
       chartWrapper.className = CHART_CLASS;
       const playerChartId = item?.dataset?.[DATASET_PLAYER_ID] || '';
-      const chart = getPlayerSparkline(playerChartId, data.weeklySeries);
+      const chart = getPlayerSparkline(playerChartId, data.weeklySeries, {
+        weekNumber: Number.isFinite(data.sparklineWeek) ? Number(data.sparklineWeek) : undefined,
+        gameState: localGameState,
+      });
       if (chart) {
         chartWrapper.appendChild(chart);
         stack.appendChild(chartWrapper);
