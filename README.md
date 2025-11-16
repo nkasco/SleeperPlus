@@ -1,6 +1,5 @@
 <h1 align="center" style="font-size:3rem; font-weight:700;">
   <img src="images/icon1024.png" alt="Sleeper+ icon" width="200" style="vertical-align:middle; margin-right:12px;" />
-  Sleeper+
 </h1>
 
 <p align="center">
