@@ -140,6 +140,8 @@ const getTrackedLeagueIds = () =>
     });
   });
 
+let playerDirectoryRefreshPromise = null;
+
 const ensureDefaultStorage = async () => {
   const [players, stats, metrics] = await Promise.all([
     getCacheEnvelope(STORAGE_KEYS.PLAYERS),
@@ -333,21 +335,32 @@ const refreshPlayerDirectory = async ({ force = false } = {}) => {
     return existing;
   }
 
-  const players = await fetchJson('/players/nfl');
-  const slimmed = {};
-  Object.entries(players || {}).forEach(([playerId, record]) => {
-    if (!record) {
-      return;
-    }
-    slimmed[playerId] = slimPlayerRecord(record);
-  });
+  if (!playerDirectoryRefreshPromise) {
+    playerDirectoryRefreshPromise = (async () => {
+      try {
+        const players = await fetchJson('/players/nfl');
+        const slimmed = {};
+        Object.entries(players || {}).forEach(([playerId, record]) => {
+          if (!record) {
+            return;
+          }
+          slimmed[playerId] = slimPlayerRecord(record);
+        });
 
-  const payload = {
-    lastSync: Date.now(),
-    records: slimmed,
-  };
-  await setCacheEnvelope(STORAGE_KEYS.PLAYERS, payload);
-  return getCacheEnvelope(STORAGE_KEYS.PLAYERS);
+        const payload = {
+          lastSync: Date.now(),
+          records: slimmed,
+        };
+        await setCacheEnvelope(STORAGE_KEYS.PLAYERS, payload);
+        const updated = await getCacheEnvelope(STORAGE_KEYS.PLAYERS);
+        return updated;
+      } finally {
+        playerDirectoryRefreshPromise = null;
+      }
+    })();
+  }
+
+  return playerDirectoryRefreshPromise;
 };
 
 const computePositionRanks = (playerWeekly, playerDirectory) => {
