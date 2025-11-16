@@ -27,13 +27,17 @@
 
           <div class="settings-group">
             <h2>Trends &amp; Data</h2>
+            <label class="toggle" for="show-opponent-ranks">
+              <input id="show-opponent-ranks" type="checkbox" checked>
+              <span>Show opponent rank indicator next to players</span>
+            </label>
             <label class="toggle" for="enable-trend-overlays">
               <input id="enable-trend-overlays" type="checkbox" checked>
               <span>Show player trend overlays on team pages</span>
             </label>
-            <label class="toggle" for="show-opponent-ranks">
-              <input id="show-opponent-ranks" type="checkbox" checked>
-              <span>Show opponent rank indicator next to trends</span>
+            <label class="toggle" for="show-sparkline-always">
+              <input id="show-sparkline-always" type="checkbox" checked>
+              <span>Show player sparklines on league page pop-ups</span>
             </label>
             <p class="helper">Sleeper+ auto-refreshes league data about once an hour; trigger a manual refresh to immediately pull the latest player performance, matchup ranks, and league metrics for every linked league.</p>
             <button id="refresh-data-button" type="button" class="secondary">Refresh Sleeper data</button>

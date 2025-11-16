@@ -15,6 +15,7 @@
   const DEFAULT_DISABLE_SLEEPER_PLUS = false;
   const DEFAULT_ENABLE_TREND_OVERLAYS = true;
   const DEFAULT_SHOW_OPPONENT_RANKS = true;
+  const DEFAULT_SHOW_SPARKLINE_ALWAYS = true;
   const MIN_CHAT_MAX_WIDTH = 200;
   const MAX_CHAT_MAX_WIDTH = 800;
   const CENTER_PANEL_SPARKLINE_THRESHOLD = 800;
@@ -27,6 +28,7 @@
     disableSleeperPlus: DEFAULT_DISABLE_SLEEPER_PLUS,
     enableTrendOverlays: DEFAULT_ENABLE_TREND_OVERLAYS,
     showOpponentRanks: DEFAULT_SHOW_OPPONENT_RANKS,
+    showSparklineAlways: DEFAULT_SHOW_SPARKLINE_ALWAYS,
   };
 
   let leagueIds = [];
@@ -35,6 +37,7 @@
   let disableSleeperPlus = DEFAULT_DISABLE_SLEEPER_PLUS;
   let enableTrendOverlays = DEFAULT_ENABLE_TREND_OVERLAYS;
   let showOpponentRanks = DEFAULT_SHOW_OPPONENT_RANKS;
+  let showSparklineAlways = DEFAULT_SHOW_SPARKLINE_ALWAYS;
   let isActive = false;
   let settingsObserver = null;
   let currentBaseUrl = '';
@@ -126,6 +129,10 @@
         typeof raw.showOpponentRanks === 'boolean'
           ? raw.showOpponentRanks
           : DEFAULT_SETTINGS.showOpponentRanks,
+      showSparklineAlways:
+        typeof raw.showSparklineAlways === 'boolean'
+          ? raw.showSparklineAlways
+          : DEFAULT_SETTINGS.showSparklineAlways,
     };
   };
 
@@ -140,6 +147,7 @@
           'disableSleeperPlus',
           'enableTrendOverlays',
           'showOpponentRanks',
+          'showSparklineAlways',
         ],
         (result) => resolve(sanitizeSettings(result))
       );
@@ -530,9 +538,8 @@
     `;
 
     const buttonStyles = shouldDisplaySettingsButton() ? getButtonStyleBlock() : '';
-    const trendStyles = enableTrendOverlays ? getTrendStyleBlock() : '';
-     const compactStyles = enableTrendOverlays
-      ? `.${COMPACT_PANEL_CLASS} .sleeper-plus-trend__chart,
+    const trendStyles = getTrendStyleBlock();
+    const compactStyles = `.${COMPACT_PANEL_CLASS} .sleeper-plus-trend__chart,
         .${COMPACT_PANEL_CLASS} .sleeper-plus-trend__meta {
           display: none !important;
         }
@@ -548,8 +555,7 @@
         .${COMPACT_PANEL_CLASS} .sleeper-plus-trend__stack {
           padding-left: 0 !important;
           border-left: none !important;
-        }`
-      : '';
+        }`;
 
     style.textContent = `${layoutStyles}${buttonStyles}${trendStyles}${compactStyles}`;
   };
@@ -799,6 +805,9 @@
     const inflightTrends = new Map();
     const lookupCache = new Map();
     const inflightLookups = new Map();
+    const MODAL_CLASS_PATTERN = /(modal|dialog|overlay|sheet|drawer|portal)/i;
+    const MODAL_ID_TOKENS = ['modal', 'dialog', 'overlay', 'portal', 'sheet', 'drawer'];
+    const MODAL_ATTRIBUTE_TOKENS = ['modal', 'dialog', 'overlay'];
 
     let leagueId = '';
     let running = false;
@@ -822,6 +831,48 @@
         .trim()
         .toLowerCase()
         .replace(/\s+/g, ' ');
+
+    const isLeagueStandingsView = () =>
+      /\/leagues\/[^/]+\/league(?:\/|$)/i.test(window.location.pathname || '');
+
+    const hasModalAncestor = (node) => {
+      const target = node?.closest?.('.team-roster');
+      if (!target) {
+        return false;
+      }
+      let current = target.parentElement;
+      while (current && current !== document.body) {
+        const role = current.getAttribute?.('role') || '';
+        const ariaModal = current.getAttribute?.('aria-modal');
+        if (role === 'dialog' || role === 'alertdialog' || ariaModal === 'true') {
+          return true;
+        }
+        const classMatches = Array.from(current.classList || []).some((className) =>
+          MODAL_CLASS_PATTERN.test(className)
+        );
+        if (classMatches) {
+          return true;
+        }
+        const id = current.id || '';
+        if (id && MODAL_ID_TOKENS.some((token) => id.toLowerCase().includes(token))) {
+          return true;
+        }
+        const attributeHit = MODAL_ATTRIBUTE_TOKENS.some((token) => {
+          const attributeNames = ['data-testid', 'data-test', 'data-qa'];
+          return attributeNames.some((attr) => {
+            const value = current.getAttribute?.(attr);
+            return value ? value.toLowerCase().includes(token) : false;
+          });
+        });
+        if (attributeHit) {
+          return true;
+        }
+        current = current.parentElement;
+      }
+      return false;
+    };
+
+    const isOverlayRoster = (item) => isLeagueStandingsView() && hasModalAncestor(item);
 
     const getCurrentWeekNumber = () => (Number.isFinite(activeWeek) ? activeWeek : null);
     const getCurrentWeekKey = () => (Number.isFinite(activeWeek) ? `week-${activeWeek}` : 'auto');
@@ -1722,7 +1773,7 @@
       return numeric.toFixed(1);
     };
 
-    const renderMessage = (item, message, { weekKey } = {}) => {
+    const renderMessage = (item, message, { weekKey, overlayRoster } = {}) => {
       removeTrend(item);
       const scheduleWrapper = findScheduleWrapper(item);
       const localGameState = detectScheduleGameState(scheduleWrapper);
@@ -1743,12 +1794,12 @@
       host.appendChild(container);
       item.dataset[DATASET_STATE] = 'error';
       setItemWeekKey(item, weekKey || getCurrentWeekKey());
-      if (showOpponentRanks) {
+      if (showOpponentRanks && !overlayRoster) {
         ensureInlinePlaceholder(item, scheduleWrapper);
       }
     };
 
-    const renderTrend = (item, data, { weekKey } = {}) => {
+    const renderTrend = (item, data, { weekKey, overlayRoster } = {}) => {
       removeTrend(item);
       const scheduleWrapper = findScheduleWrapper(item);
       const localGameState = detectScheduleGameState(scheduleWrapper);
@@ -1802,7 +1853,8 @@
         stack.appendChild(meta);
       }
 
-      if (showOpponentRanks) {
+      const allowOpponentDetails = showOpponentRanks && !overlayRoster;
+      if (allowOpponentDetails) {
         const matchupData = data.matchup || buildFallbackMatchup(data, item, scheduleWrapper);
         const attachedInline = updateInlineMatchup(item, matchupData || null, scheduleWrapper);
         if (matchupData && !attachedInline) {
@@ -1816,11 +1868,15 @@
       const chartWrapper = document.createElement('div');
       chartWrapper.className = CHART_CLASS;
       const playerChartId = item?.dataset?.[DATASET_PLAYER_ID] || '';
-      const chart = getPlayerSparkline(playerChartId, data.weeklySeries, {
-        weekNumber: Number.isFinite(data.sparklineWeek) ? Number(data.sparklineWeek) : undefined,
-        gameState: localGameState,
-      });
-      if (chart) {
+      const allowSparkline = (!overlayRoster && enableTrendOverlays) || (overlayRoster && showSparklineAlways);
+      let chart = null;
+      if (allowSparkline) {
+        chart = getPlayerSparkline(playerChartId, data.weeklySeries, {
+          weekNumber: Number.isFinite(data.sparklineWeek) ? Number(data.sparklineWeek) : undefined,
+          gameState: localGameState,
+        });
+      }
+      if (allowSparkline && chart) {
         chartWrapper.appendChild(chart);
         stack.appendChild(chartWrapper);
       }
@@ -1840,7 +1896,10 @@
         return;
       }
 
-      if (showOpponentRanks) {
+      const overlayRoster = isOverlayRoster(item);
+      const allowOpponentDetails = showOpponentRanks && !overlayRoster;
+
+      if (allowOpponentDetails) {
         ensureInlinePlaceholder(item);
       }
 
@@ -1853,7 +1912,10 @@
         try {
           const resolvedId = await resolvePlayerId(identity);
           if (!resolvedId) {
-            renderMessage(item, 'Sleeper+ trend unavailable', { weekKey: getCurrentWeekKey() });
+            renderMessage(item, 'Sleeper+ trend unavailable', {
+              weekKey: getCurrentWeekKey(),
+              overlayRoster,
+            });
             return;
           }
           const currentWeekKey = getCurrentWeekKey();
@@ -1871,10 +1933,11 @@
             scheduleScan();
             return;
           }
-          renderTrend(item, trend, { weekKey: weekContext.cacheKey });
+          renderTrend(item, trend, { weekKey: weekContext.cacheKey, overlayRoster });
         } catch (error) {
           renderMessage(item, 'Sleeper+ trend unavailable', {
             weekKey: weekContext?.cacheKey || getCurrentWeekKey(),
+            overlayRoster,
           });
           console.warn('Sleeper+ trend render failed', error);
         }
@@ -2465,7 +2528,7 @@
     }
 
     const activeLeagueId = getCurrentLeagueId();
-    const shouldRunTrends = isActive && enableTrendOverlays && Boolean(activeLeagueId);
+    const shouldRunTrends = isActive && Boolean(activeLeagueId);
     trendOverlayManager.update({ enabled: shouldRunTrends, leagueId: shouldRunTrends ? activeLeagueId : '' });
     if (shouldRunTrends) {
       trendOverlayManager.refresh();
@@ -2509,6 +2572,7 @@
     disableSleeperPlus = stored.disableSleeperPlus;
     enableTrendOverlays = stored.enableTrendOverlays;
     showOpponentRanks = stored.showOpponentRanks;
+    showSparklineAlways = stored.showSparklineAlways;
 
     evaluateActivation();
     currentBaseUrl = window.location.href;
@@ -2587,6 +2651,18 @@
 
       if (showOpponentRanks !== nextShowOpponentRanks) {
         showOpponentRanks = nextShowOpponentRanks;
+        trendOverlayManager.refresh();
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(changes, 'showSparklineAlways')) {
+      const nextShowSparklineAlways =
+        typeof changes.showSparklineAlways.newValue === 'boolean'
+          ? changes.showSparklineAlways.newValue
+          : DEFAULT_SHOW_SPARKLINE_ALWAYS;
+
+      if (showSparklineAlways !== nextShowSparklineAlways) {
+        showSparklineAlways = nextShowSparklineAlways;
         trendOverlayManager.refresh();
       }
     }

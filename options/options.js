@@ -4,6 +4,7 @@
 	const DEFAULT_DISABLE_SLEEPER_PLUS = false;
 	const DEFAULT_ENABLE_TREND_OVERLAYS = true;
 	const DEFAULT_SHOW_OPPONENT_RANKS = true;
+	const DEFAULT_SHOW_SPARKLINE_ALWAYS = true;
 	const MIN_CHAT_MAX_WIDTH = 200;
 	const MAX_CHAT_MAX_WIDTH = 800;
 	const LAST_REFRESH_STORAGE_KEY = 'sleeperPlus:lastDataRefresh';
@@ -17,6 +18,7 @@
 	const showButtonInput = document.getElementById('show-settings-button');
 	const enableTrendsInput = document.getElementById('enable-trend-overlays');
 	const showOpponentRanksInput = document.getElementById('show-opponent-ranks');
+	const showSparklineAlwaysInput = document.getElementById('show-sparkline-always');
 	const message = document.getElementById('message');
 	const saveButton = document.getElementById('save-button');
 	const goToLeagueButton = document.getElementById('go-to-league-button');
@@ -34,6 +36,7 @@
 		disableSleeperPlus: DEFAULT_DISABLE_SLEEPER_PLUS,
 		enableTrendOverlays: DEFAULT_ENABLE_TREND_OVERLAYS,
 		showOpponentRanks: DEFAULT_SHOW_OPPONENT_RANKS,
+		showSparklineAlways: DEFAULT_SHOW_SPARKLINE_ALWAYS,
 	};
 
 	let refreshInFlight = false;
@@ -253,6 +256,10 @@
 				typeof result.showOpponentRanks === 'boolean'
 					? result.showOpponentRanks
 					: DEFAULT_SHOW_OPPONENT_RANKS,
+			showSparklineAlways:
+				typeof result.showSparklineAlways === 'boolean'
+					? result.showSparklineAlways
+					: DEFAULT_SHOW_SPARKLINE_ALWAYS,
 		};
 	};
 
@@ -267,6 +274,7 @@
 					'disableSleeperPlus',
 					'enableTrendOverlays',
 					'showOpponentRanks',
+					'showSparklineAlways',
 				],
 				(result) => resolve(sanitizeStoredSettings(result))
 			);
@@ -290,6 +298,7 @@
 					'disableSleeperPlus',
 					'enableTrendOverlays',
 					'showOpponentRanks',
+					'showSparklineAlways',
 				],
 				() => resolve()
 			);
@@ -307,6 +316,7 @@
 		showButtonInput.disabled = isLoading;
 		enableTrendsInput.disabled = isLoading;
 		showOpponentRanksInput.disabled = isLoading;
+		showSparklineAlwaysInput.disabled = isLoading;
 		syncRefreshButtonState();
 	};
 
@@ -456,6 +466,7 @@
 		const disableSleeperPlus = disableExtensionInput.checked;
 		const enableTrendOverlays = enableTrendsInput.checked;
 		const showOpponentRanks = showOpponentRanksInput.checked;
+		const showSparklineAlways = showSparklineAlwaysInput.checked;
 		const leagueIds = uniqueLeagueIds(state.leagueIds);
 
 		setLoading(true);
@@ -467,6 +478,7 @@
 				disableSleeperPlus,
 				enableTrendOverlays,
 				showOpponentRanks,
+				showSparklineAlways,
 			});
 
 			state.leagueIds = leagueIds;
@@ -475,6 +487,7 @@
 			state.disableSleeperPlus = disableSleeperPlus;
 			state.enableTrendOverlays = enableTrendOverlays;
 			state.showOpponentRanks = showOpponentRanks;
+			state.showSparklineAlways = showSparklineAlways;
 
 			renderLeagueList();
 
@@ -526,6 +539,7 @@
 			state.disableSleeperPlus = DEFAULT_DISABLE_SLEEPER_PLUS;
 			state.enableTrendOverlays = DEFAULT_ENABLE_TREND_OVERLAYS;
 			state.showOpponentRanks = DEFAULT_SHOW_OPPONENT_RANKS;
+			state.showSparklineAlways = DEFAULT_SHOW_SPARKLINE_ALWAYS;
 			lastAddedLeagueId = '';
 
 			leagueInput.value = '';
@@ -534,6 +548,7 @@
 			showButtonInput.checked = DEFAULT_SHOW_SETTINGS_BUTTON;
 			enableTrendsInput.checked = DEFAULT_ENABLE_TREND_OVERLAYS;
 			showOpponentRanksInput.checked = DEFAULT_SHOW_OPPONENT_RANKS;
+			showSparklineAlwaysInput.checked = DEFAULT_SHOW_SPARKLINE_ALWAYS;
 			setRefreshStatus('');
 			setRefreshBusy(false);
 			renderLeagueList();
@@ -596,6 +611,7 @@
 			state.disableSleeperPlus = stored.disableSleeperPlus;
 			state.enableTrendOverlays = stored.enableTrendOverlays;
 			state.showOpponentRanks = stored.showOpponentRanks;
+			state.showSparklineAlways = stored.showSparklineAlways;
 			lastAddedLeagueId = state.leagueIds[state.leagueIds.length - 1] || '';
 
 			renderLeagueList();
@@ -604,6 +620,7 @@
 			showButtonInput.checked = state.showSettingsButton;
 			enableTrendsInput.checked = state.enableTrendOverlays;
 			showOpponentRanksInput.checked = state.showOpponentRanks;
+			showSparklineAlwaysInput.checked = state.showSparklineAlways;
 			setRefreshStatus('');
 			await syncLastRefreshMetadata();
 
