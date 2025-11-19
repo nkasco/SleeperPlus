@@ -1418,7 +1418,8 @@
             entry.projected === null || entry.projected === undefined ? 'null' : Number(entry.projected) || 0;
           const hasActual = entry.hasActual ? '1' : '0';
           const isFuture = entry.isFuture ? '1' : '0';
-          return `${week}:${actual}:${projected}:${hasActual}:${isFuture}`;
+          const isDisplayed = entry.isDisplayedWeek ? '1' : '0';
+          return `${week}:${actual}:${projected}:${hasActual}:${isFuture}:${isDisplayed}`;
         })
         .join('|');
 
@@ -2113,7 +2114,8 @@
             entry.projected === null || entry.projected === undefined ? 'null' : Number(entry.projected) || 0;
           const isFuture = entry.isFuture ? '1' : '0';
           const hasActual = entry.hasActual ? '1' : '0';
-          return `${week}:${actual}:${projected}:${isFuture}:${hasActual}`;
+          const isDisplayed = entry.isDisplayedWeek ? '1' : '0';
+          return `${week}:${actual}:${projected}:${isFuture}:${hasActual}:${isDisplayed}`;
         })
         .join('|');
       const normalizedWeek = Number.isFinite(weekNumber) ? weekNumber : 'auto';
@@ -2127,15 +2129,16 @@
         }
         return null;
       }
+      const resolvedWeekNumber = resolveSparklineWeekNumber(series, weekNumber);
       if (!playerId) {
-        return createSparkline(series, weekNumber);
+        return createSparkline(series, resolvedWeekNumber);
       }
-      const signature = buildSeriesSignature(series, weekNumber);
+      const signature = buildSeriesSignature(series, resolvedWeekNumber);
       const cached = sparklineCache.get(playerId);
       if (cached?.signature === signature && cached.svg) {
         return cached.svg.cloneNode(true);
       }
-      const sparkline = createSparkline(series, weekNumber);
+      const sparkline = createSparkline(series, resolvedWeekNumber);
       if (!sparkline) {
         return null;
       }
@@ -2221,7 +2224,7 @@
       current: CURRENT_WEEK_COLOR,
     };
 
-    const parseSeriesWeekNumber = (entry) => {
+    function parseSeriesWeekNumber(entry) {
       if (!entry || entry.week === null || entry.week === undefined) {
         return null;
       }
@@ -2242,7 +2245,36 @@
         }
       }
       return null;
-    };
+    }
+
+    function resolveSparklineWeekNumber(series, preferredWeekNumber = null) {
+      const normalizedPreferred = Number.isFinite(preferredWeekNumber) ? Number(preferredWeekNumber) : null;
+      if (!Array.isArray(series) || series.length === 0) {
+        return normalizedPreferred;
+      }
+      if (
+        Number.isFinite(normalizedPreferred) &&
+        series.some((entry) => parseSeriesWeekNumber(entry) === normalizedPreferred)
+      ) {
+        return normalizedPreferred;
+      }
+      const displayedEntry = series.find((entry) => entry && entry.isDisplayedWeek);
+      const displayedWeek = parseSeriesWeekNumber(displayedEntry);
+      if (Number.isFinite(displayedWeek)) {
+        return displayedWeek;
+      }
+      for (let index = series.length - 1; index >= 0; index -= 1) {
+        const entry = series[index];
+        if (!entry || entry.isFuture) {
+          continue;
+        }
+        const week = parseSeriesWeekNumber(entry);
+        if (Number.isFinite(week)) {
+          return week;
+        }
+      }
+      return normalizedPreferred;
+    }
 
     const isCurrentWeekEntry = (entry, currentWeekNumber) => {
       if (!Number.isFinite(currentWeekNumber)) {
@@ -2311,10 +2343,11 @@
       }
       const width = 220;
       const height = 48;
-      const currentWeekNumber = Number.isFinite(overrideWeekNumber)
+      const preferredWeekNumber = Number.isFinite(overrideWeekNumber)
         ? Number(overrideWeekNumber)
         : getCurrentWeekNumber();
-      const { areaPoints, coords, min, range } = buildSparklinePoints(series, width, height, currentWeekNumber);
+      const resolvedWeekNumber = resolveSparklineWeekNumber(series, preferredWeekNumber);
+      const { areaPoints, coords, min, range } = buildSparklinePoints(series, width, height, resolvedWeekNumber);
       if (!coords || coords.length === 0) {
         return null;
       }
@@ -2335,9 +2368,9 @@
         svg.appendChild(area);
       }
 
-      const segments = segmentLinePoints(actualCoords, actualSeries, currentWeekNumber);
+      const segments = segmentLinePoints(actualCoords, actualSeries, resolvedWeekNumber);
       if (segments.length === 0 && actualCoords.length > 0) {
-        const fallbackClass = classifyWeek(actualSeries[0], currentWeekNumber);
+        const fallbackClass = classifyWeek(actualSeries[0], resolvedWeekNumber);
         const fallbackPoints =
           actualCoords.length === 1 ? [actualCoords[0], actualCoords[0]] : actualCoords;
         segments.push({ classification: fallbackClass, points: fallbackPoints });
@@ -2428,7 +2461,7 @@
         } else {
           circle.setAttribute('cx', x);
           circle.setAttribute('cy', y);
-          const classification = classifyWeek(dataPoint, currentWeekNumber);
+          const classification = classifyWeek(dataPoint, resolvedWeekNumber);
           circle.classList.add('sleeper-plus-dot', classification);
           circle.style.fill = LINE_COLORS[classification] || LINE_COLORS.neutral;
         }

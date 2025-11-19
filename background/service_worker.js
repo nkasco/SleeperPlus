@@ -1,6 +1,6 @@
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const ONE_DAY_MS = 24 * ONE_HOUR_MS;
-const DATA_VERSION = 3;
+const DATA_VERSION = 4;
 const STORAGE_KEYS = {
   PLAYERS: 'sleeperPlus:players',
   STATS: 'sleeperPlus:stats',
@@ -728,7 +728,9 @@ const buildOpponentPositionRanks = (projectionResult, playerDirectory) => {
 
 const ensureWeeklyRecord = (container, playerId) => {
   if (!container[playerId]) {
-    container[playerId] = { actual: {}, projected: {} };
+    container[playerId] = { actual: {}, projected: {}, actualized: {} };
+  } else if (!container[playerId].actualized) {
+    container[playerId].actualized = {};
   }
   return container[playerId];
 };
@@ -743,17 +745,22 @@ const serializeWeeklyContainer = (container) => {
     const entries = Array.from(allWeeks)
       .map((value) => Number(value))
       .sort((a, b) => a - b)
-      .map((week) => ({
-        week,
-        hasActual: Object.prototype.hasOwnProperty.call(weeklyData.actual || {}, week),
-        points: Object.prototype.hasOwnProperty.call(weeklyData.actual || {}, week)
-          ? Number(weeklyData.actual?.[week]) || 0
-          : 0,
-        projected:
-          Object.prototype.hasOwnProperty.call(weeklyData.projected || {}, week)
-            ? Number(weeklyData.projected?.[week])
-            : null,
-      }));
+      .map((week) => {
+        const hasActualEntry = Object.prototype.hasOwnProperty.call(weeklyData.actual || {}, week);
+        const resolvedPoints = hasActualEntry ? Number(weeklyData.actual?.[week]) || 0 : 0;
+        const hasActualized = Object.prototype.hasOwnProperty.call(weeklyData.actualized || {}, week)
+          ? Boolean(weeklyData.actualized?.[week])
+          : hasActualEntry;
+        return {
+          week,
+          hasActual: hasActualized,
+          points: resolvedPoints,
+          projected:
+            Object.prototype.hasOwnProperty.call(weeklyData.projected || {}, week)
+              ? Number(weeklyData.projected?.[week])
+              : null,
+        };
+      });
     serialized[playerId] = entries;
   });
   return serialized;
@@ -849,6 +856,12 @@ const fetchLeagueSnapshot = async (leagueId, playerDirectory, sharedState) => {
           const numericPoints = Number(weeklyPoints);
           const safePoints = Number.isFinite(numericPoints) ? numericPoints : 0;
           record.actual[week] = safePoints + (record.actual[week] || 0);
+          if (!Object.prototype.hasOwnProperty.call(record.actualized, week)) {
+            record.actualized[week] = false;
+          }
+          if (safePoints !== 0) {
+            record.actualized[week] = true;
+          }
         });
       });
       const statsSource = statsMap && Object.keys(statsMap.actuals || {}).length > 0 ? statsMap : null;
@@ -858,6 +871,10 @@ const fetchLeagueSnapshot = async (leagueId, playerDirectory, sharedState) => {
           if (!Number.isFinite(numericPoints)) {
             return;
           }
+          const record = ensureWeeklyRecord(playerWeeklySource, playerId);
+          record.actual[week] = numericPoints;
+          record.actualized[week] = true;
+
           const directoryEntry = playerDirectory[playerId];
           const opponentCode = normalizeOpponentCode(statsSource.opponents?.[playerId]);
           if (!directoryEntry || !opponentCode) {
@@ -937,6 +954,15 @@ const fetchLeagueSnapshot = async (leagueId, playerDirectory, sharedState) => {
       };
     });
     playerMatchupsByWeek[week] = weekMatchups;
+
+    if (Number.isFinite(statsWeek) && week < statsWeek) {
+      trackedPlayerIds.forEach((playerId) => {
+        const record = ensureWeeklyRecord(playerWeeklySource, playerId);
+        if (Object.prototype.hasOwnProperty.call(record.actual || {}, week)) {
+          record.actualized[week] = true;
+        }
+      });
+    }
   }
 
   // Ensure rostered players have a container even if no data is available.
@@ -1381,6 +1407,7 @@ const buildWeeklySeries = (entries, { startWeek, currentWeek, seasonEndWeek, dis
       projected: projectedMap.has(week) ? projectedMap.get(week) : null,
       isFuture: week > futureMarker,
       hasActual,
+      isDisplayedWeek: week === futureMarker,
     });
   }
   return series;
