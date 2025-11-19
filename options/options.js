@@ -5,6 +5,7 @@
 	const DEFAULT_ENABLE_TREND_OVERLAYS = true;
 	const DEFAULT_SHOW_OPPONENT_RANKS = true;
 	const DEFAULT_SHOW_SPARKLINE_ALWAYS = true;
+	const DEFAULT_SHOW_TEAM_TOTALS = true;
 	const MIN_CHAT_MAX_WIDTH = 200;
 	const MAX_CHAT_MAX_WIDTH = 800;
 	const LAST_REFRESH_STORAGE_KEY = 'sleeperPlus:lastDataRefresh';
@@ -19,6 +20,7 @@
 	const enableTrendsInput = document.getElementById('enable-trend-overlays');
 	const showOpponentRanksInput = document.getElementById('show-opponent-ranks');
 	const showSparklineAlwaysInput = document.getElementById('show-sparkline-always');
+	const showTeamTotalsInput = document.getElementById('show-team-totals');
 	const message = document.getElementById('message');
 	const saveButton = document.getElementById('save-button');
 	const goToLeagueButton = document.getElementById('go-to-league-button');
@@ -37,6 +39,7 @@
 		enableTrendOverlays: DEFAULT_ENABLE_TREND_OVERLAYS,
 		showOpponentRanks: DEFAULT_SHOW_OPPONENT_RANKS,
 		showSparklineAlways: DEFAULT_SHOW_SPARKLINE_ALWAYS,
+		showTeamTotals: DEFAULT_SHOW_TEAM_TOTALS,
 	};
 
 	let refreshInFlight = false;
@@ -260,6 +263,10 @@
 				typeof result.showSparklineAlways === 'boolean'
 					? result.showSparklineAlways
 					: DEFAULT_SHOW_SPARKLINE_ALWAYS,
+			showTeamTotals:
+				typeof result.showTeamTotals === 'boolean'
+					? result.showTeamTotals
+					: DEFAULT_SHOW_TEAM_TOTALS,
 		};
 	};
 
@@ -275,6 +282,7 @@
 					'enableTrendOverlays',
 					'showOpponentRanks',
 					'showSparklineAlways',
+					'showTeamTotals',
 				],
 				(result) => resolve(sanitizeStoredSettings(result))
 			);
@@ -299,6 +307,7 @@
 					'enableTrendOverlays',
 					'showOpponentRanks',
 					'showSparklineAlways',
+					'showTeamTotals',
 				],
 				() => resolve()
 			);
@@ -317,6 +326,7 @@
 		enableTrendsInput.disabled = isLoading;
 		showOpponentRanksInput.disabled = isLoading;
 		showSparklineAlwaysInput.disabled = isLoading;
+		showTeamTotalsInput.disabled = isLoading;
 		syncRefreshButtonState();
 	};
 
@@ -467,6 +477,7 @@
 		const enableTrendOverlays = enableTrendsInput.checked;
 		const showOpponentRanks = showOpponentRanksInput.checked;
 		const showSparklineAlways = showSparklineAlwaysInput.checked;
+		const showTeamTotals = showTeamTotalsInput.checked;
 		const leagueIds = uniqueLeagueIds(state.leagueIds);
 
 		setLoading(true);
@@ -479,6 +490,7 @@
 				enableTrendOverlays,
 				showOpponentRanks,
 				showSparklineAlways,
+				showTeamTotals,
 			});
 
 			state.leagueIds = leagueIds;
@@ -488,6 +500,7 @@
 			state.enableTrendOverlays = enableTrendOverlays;
 			state.showOpponentRanks = showOpponentRanks;
 			state.showSparklineAlways = showSparklineAlways;
+			state.showTeamTotals = showTeamTotals;
 
 			renderLeagueList();
 
@@ -540,6 +553,7 @@
 			state.enableTrendOverlays = DEFAULT_ENABLE_TREND_OVERLAYS;
 			state.showOpponentRanks = DEFAULT_SHOW_OPPONENT_RANKS;
 			state.showSparklineAlways = DEFAULT_SHOW_SPARKLINE_ALWAYS;
+			state.showTeamTotals = DEFAULT_SHOW_TEAM_TOTALS;
 			lastAddedLeagueId = '';
 
 			leagueInput.value = '';
@@ -549,6 +563,7 @@
 			enableTrendsInput.checked = DEFAULT_ENABLE_TREND_OVERLAYS;
 			showOpponentRanksInput.checked = DEFAULT_SHOW_OPPONENT_RANKS;
 			showSparklineAlwaysInput.checked = DEFAULT_SHOW_SPARKLINE_ALWAYS;
+			showTeamTotalsInput.checked = DEFAULT_SHOW_TEAM_TOTALS;
 			setRefreshStatus('');
 			setRefreshBusy(false);
 			renderLeagueList();
@@ -612,6 +627,7 @@
 			state.enableTrendOverlays = stored.enableTrendOverlays;
 			state.showOpponentRanks = stored.showOpponentRanks;
 			state.showSparklineAlways = stored.showSparklineAlways;
+			state.showTeamTotals = stored.showTeamTotals;
 			lastAddedLeagueId = state.leagueIds[state.leagueIds.length - 1] || '';
 
 			renderLeagueList();
@@ -621,6 +637,7 @@
 			enableTrendsInput.checked = state.enableTrendOverlays;
 			showOpponentRanksInput.checked = state.showOpponentRanks;
 			showSparklineAlwaysInput.checked = state.showSparklineAlways;
+			showTeamTotalsInput.checked = state.showTeamTotals;
 			setRefreshStatus('');
 			await syncLastRefreshMetadata();
 

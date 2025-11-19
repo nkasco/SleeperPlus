@@ -10,7 +10,7 @@
   "manifest_version": 3,
   "name": "Sleeper+",
   "description": "Chrome Extension to enhance the desktop web experience for Sleeper Fantasy Football. Not affiliated with Sleeper.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "permissions": ["storage", "alarms", "unlimitedStorage"],
   "options_page": "options/options.html",
   "icons": {
@@ -30,7 +30,8 @@
   ],
   "host_permissions": [
     "https://sleeper.com/leagues/*",
-    "https://api.sleeper.app/*"
+    "https://api.sleeper.app/*",
+    "https://api.sleeper.com/*"
   ],
   "homepage_url": "https://github.com/nkasco/SleeperPlus"
 }

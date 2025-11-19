@@ -8,6 +8,8 @@
   const REFRESH_INDICATOR_CLASS = 'sleeper-plus-refresh-indicator';
   const REFRESH_INDICATOR_HIDDEN_CLASS = 'is-hidden';
   const REFRESH_INDICATOR_TEXT = 'Refreshing player data for Sleeper+...';
+  const TEAM_TOTALS_ERROR_CLASS = 'sleeper-plus-team-totals__error';
+  const TEAM_TOTALS_ERROR_TEXT_CLASS = 'sleeper-plus-team-totals__error-text';
   const SETTINGS_OBSERVER_CONFIG = { childList: true, subtree: true };
 
   const DEFAULT_CHAT_MAX_WIDTH = 400;
@@ -16,6 +18,7 @@
   const DEFAULT_ENABLE_TREND_OVERLAYS = true;
   const DEFAULT_SHOW_OPPONENT_RANKS = true;
   const DEFAULT_SHOW_SPARKLINE_ALWAYS = true;
+  const DEFAULT_SHOW_TEAM_TOTALS = true;
   const MIN_CHAT_MAX_WIDTH = 200;
   const MAX_CHAT_MAX_WIDTH = 800;
   const CENTER_PANEL_SPARKLINE_THRESHOLD = 800;
@@ -29,6 +32,7 @@
     enableTrendOverlays: DEFAULT_ENABLE_TREND_OVERLAYS,
     showOpponentRanks: DEFAULT_SHOW_OPPONENT_RANKS,
     showSparklineAlways: DEFAULT_SHOW_SPARKLINE_ALWAYS,
+    showTeamTotals: DEFAULT_SHOW_TEAM_TOTALS,
   };
 
   let leagueIds = [];
@@ -38,6 +42,7 @@
   let enableTrendOverlays = DEFAULT_ENABLE_TREND_OVERLAYS;
   let showOpponentRanks = DEFAULT_SHOW_OPPONENT_RANKS;
   let showSparklineAlways = DEFAULT_SHOW_SPARKLINE_ALWAYS;
+  let showTeamTotals = DEFAULT_SHOW_TEAM_TOTALS;
   let isActive = false;
   let settingsObserver = null;
   let currentBaseUrl = '';
@@ -47,6 +52,54 @@
   let windowResizeListenerAttached = false;
   let pendingCenterPanelResizeFrame = null;
   let isCenterPanelCompact = false;
+  let headerSettingsParent = null;
+
+  const activeWeekService = (() => {
+    const CACHE_TTL_MS = 60 * 1000;
+    const cache = new Map();
+    const inflight = new Map();
+
+    const fetchWeek = (leagueId) => {
+      const normalized = typeof leagueId === 'string' ? leagueId.trim() : '';
+      if (!normalized) {
+        return Promise.resolve(null);
+      }
+      const cached = cache.get(normalized);
+      if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+        return Promise.resolve(cached.value);
+      }
+      if (inflight.has(normalized)) {
+        return inflight.get(normalized);
+      }
+      const request = sendRuntimeMessage(
+        { type: 'SLEEPER_PLUS_GET_ACTIVE_WEEK', leagueId: normalized },
+        'active week'
+      )
+        .then((result) => {
+          const candidates = [result?.week, result?.displayWeek, result?.currentWeek, result?.statsWeek];
+          let resolved = null;
+          for (let index = 0; index < candidates.length; index += 1) {
+            const numeric = Number(candidates[index]);
+            if (Number.isFinite(numeric) && numeric >= 1) {
+              resolved = numeric;
+              break;
+            }
+          }
+          cache.set(normalized, { value: resolved, timestamp: Date.now() });
+          inflight.delete(normalized);
+          return resolved;
+        })
+        .catch((error) => {
+          inflight.delete(normalized);
+          console.debug('Sleeper+ active week request failed', error);
+          return null;
+        });
+      inflight.set(normalized, request);
+      return request;
+    };
+
+    return { fetchWeek };
+  })();
 
   const sanitizeChatWidth = (value) => {
     const numeric = Number(value);
@@ -133,6 +186,10 @@
         typeof raw.showSparklineAlways === 'boolean'
           ? raw.showSparklineAlways
           : DEFAULT_SETTINGS.showSparklineAlways,
+      showTeamTotals:
+        typeof raw.showTeamTotals === 'boolean'
+          ? raw.showTeamTotals
+          : DEFAULT_SETTINGS.showTeamTotals,
     };
   };
 
@@ -148,6 +205,7 @@
           'enableTrendOverlays',
           'showOpponentRanks',
           'showSparklineAlways',
+          'showTeamTotals',
         ],
         (result) => resolve(sanitizeSettings(result))
       );
@@ -177,6 +235,57 @@
     return match && match[1] ? match[1] : '';
   };
 
+  const TEAM_PATH_PATTERN = /\/leagues\/[^/]+\/team(?:\/\d+)?(?:\/?|$)/i;
+
+  const getCurrentRosterId = () => {
+    if (!isLeaguePath()) {
+      return '';
+    }
+    const match = window.location.pathname.match(/\/team\/(\d+)/i);
+    return match && match[1] ? match[1] : '';
+  };
+
+  const isTeamView = () => TEAM_PATH_PATTERN.test(window.location.pathname || '');
+
+  const sendRuntimeMessage = (message, label) =>
+    new Promise((resolve, reject) => {
+      try {
+        chrome.runtime.sendMessage(message, (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          if (!response) {
+            reject(new Error(`${label} failed`));
+            return;
+          }
+          if (!response.ok) {
+            reject(new Error(response.error || `${label} failed`));
+            return;
+          }
+          resolve(response.result);
+        });
+      } catch (error) {
+        reject(error);
+      }
+    });
+
+  const openSleeperPlusSettings = () => {
+    const fallback = () => {
+      chrome.runtime.sendMessage({ type: 'SLEEPER_PLUS_OPEN_OPTIONS' });
+    };
+
+    try {
+      chrome.runtime.openOptionsPage(() => {
+        if (chrome.runtime.lastError) {
+          fallback();
+        }
+      });
+    } catch (_error) {
+      fallback();
+    }
+  };
+
   const shouldDisplaySettingsButton = () => disableSleeperPlus || showSettingsButton;
 
   const refreshIndicatorController = (() => {
@@ -194,12 +303,33 @@
       }
     };
 
-    const ensureIndicatorNode = () => {
-      if (!shouldDisplaySettingsButton()) {
-        return null;
+    const resolveIndicatorPlacement = () => {
+      const totalsError = document.querySelector(`.${TEAM_TOTALS_ERROR_CLASS}`);
+      if (totalsError && totalsError.isConnected) {
+        const errorText = totalsError.querySelector(`.${TEAM_TOTALS_ERROR_TEXT_CLASS}`);
+        return { parent: totalsError, before: errorText || null, requiresSettingsButton: false };
       }
       const buttonContainer = document.getElementById(BUTTON_CONTAINER_ID);
-      if (!buttonContainer || !buttonContainer.parentElement) {
+      if (!buttonContainer) {
+        return null;
+      }
+      const placement = buttonContainer.dataset.placement || '';
+      if (placement === 'actions') {
+        return null;
+      }
+      if (!buttonContainer.parentElement) {
+        return null;
+      }
+      return { parent: buttonContainer.parentElement, before: buttonContainer, requiresSettingsButton: true };
+    };
+
+    const ensureIndicatorNode = () => {
+      const placement = resolveIndicatorPlacement();
+      if (!placement || !placement.parent || (placement.requiresSettingsButton && !shouldDisplaySettingsButton())) {
+        if (indicatorNode && indicatorNode.parentElement) {
+          indicatorNode.parentElement.removeChild(indicatorNode);
+        }
+        indicatorNode = null;
         return null;
       }
       if (indicatorNode && !indicatorNode.isConnected) {
@@ -211,8 +341,12 @@
         indicatorNode.className = `${ENTRY_CLASS} ${REFRESH_INDICATOR_CLASS} ${REFRESH_INDICATOR_HIDDEN_CLASS}`;
         indicatorNode.textContent = REFRESH_INDICATOR_TEXT;
       }
-      if (indicatorNode.parentElement !== buttonContainer.parentElement) {
-        buttonContainer.parentElement.insertBefore(indicatorNode, buttonContainer);
+      if (placement.before) {
+        if (indicatorNode.parentElement !== placement.parent || indicatorNode.nextElementSibling !== placement.before) {
+          placement.parent.insertBefore(indicatorNode, placement.before);
+        }
+      } else if (indicatorNode.parentElement !== placement.parent || indicatorNode.nextElementSibling) {
+        placement.parent.appendChild(indicatorNode);
       }
       syncIndicatorState();
       return indicatorNode;
@@ -264,47 +398,82 @@
       }
       #${BUTTON_CONTAINER_ID} {
         display: inline-flex;
+        flex-direction: column;
         align-items: center;
-        justify-content: center;
+        justify-content: flex-start;
         padding: 0;
+        gap: 6px;
+        min-width: 72px;
       }
       #${BUTTON_CONTAINER_ID}.${ENTRY_CLASS} {
         padding: 0;
+      }
+      #${BUTTON_CONTAINER_ID}[data-placement='actions'] {
+        margin: 0;
+      }
+      #${BUTTON_CONTAINER_ID}[data-placement='header'] {
+        border: none;
+        background: transparent;
+        margin: 0;
+      }
+      #${BUTTON_CONTAINER_ID} .sleeper-plus-settings-button-shell {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.08), rgba(15, 23, 42, 0.6));
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 12px 22px rgba(2, 6, 23, 0.55);
+        padding: 0;
+        transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
       }
       #${BUTTON_CONTAINER_ID} .${BUTTON_CLASS} {
         display: inline-flex;
         align-items: center;
         justify-content: center;
+        width: 100%;
+        height: 100%;
         border: none;
         background: transparent;
         color: inherit;
-        font: inherit;
-        font-size: 1.4rem;
-        font-weight: 700;
-        line-height: 1;
         cursor: pointer;
-        transition: color 0.15s ease-in-out, text-shadow 0.15s ease-in-out;
+        padding: 0;
+        transition: color 0.15s ease;
       }
-      #${BUTTON_CONTAINER_ID} .${BUTTON_CLASS}:hover,
       #${BUTTON_CONTAINER_ID} .${BUTTON_CLASS}:focus-visible {
-        background: transparent;
         outline: none;
-        text-shadow: 0 0 6px rgba(255, 255, 255, 0.35);
       }
-      #${BUTTON_CONTAINER_ID} .${BUTTON_CLASS}:focus-visible {
-        box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.2);
+      #${BUTTON_CONTAINER_ID} .${BUTTON_CLASS} svg {
+        width: 18px;
+        height: 18px;
       }
-      #${BUTTON_CONTAINER_ID} .${BUTTON_CLASS}:active {
-        transform: none;
+      .sleeper-plus-settings-label {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        font-size: 0.62rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.78);
       }
       .${REFRESH_INDICATOR_CLASS} {
-        font-size: 0.92rem;
+        font-size: 0.78rem;
         font-weight: 500;
-        color: rgba(255, 255, 255, 0.85);
+        color: rgba(255, 255, 255, 0.8);
         display: inline-flex;
         align-items: center;
         white-space: nowrap;
-        min-height: 32px;
+        min-height: 20px;
+      }
+      #${BUTTON_CONTAINER_ID}[data-placement='actions'] .${REFRESH_INDICATOR_CLASS} {
+        font-size: 0.7rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        justify-content: center;
       }
       .${REFRESH_INDICATOR_CLASS}.${REFRESH_INDICATOR_HIDDEN_CLASS} {
         display: none !important;
@@ -379,6 +548,334 @@
       }
       .sleeper-plus-trend__chart .sleeper-plus-line.line-under {
         stroke: #ef4444;
+      }
+      .sleeper-plus-user-tab-row {
+        align-items: stretch;
+        flex-wrap: wrap;
+        gap: 16px;
+      }
+      .sleeper-plus-team-totals {
+        flex: 0 0 auto;
+        width: 700px;
+        max-width: 100%;
+        margin: 6px auto 2px;
+        padding: 18px 22px 14px;
+        border-radius: 24px;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        background: linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(15, 23, 42, 0.78));
+        box-shadow: 0 24px 45px rgba(2, 6, 23, 0.5);
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        min-width: 0;
+        max-width: none;
+        font-size: 0.84rem;
+        align-self: center;
+        position: relative;
+        overflow: hidden;
+        box-sizing: border-box;
+      }
+      .sleeper-plus-team-totals__shell {
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+        align-items: stretch;
+      }
+      .sleeper-plus-team-totals__identity {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+        flex: 1 1 auto;
+        width: 100%;
+        min-width: 0;
+      }
+      .sleeper-plus-team-totals__identity .sleeper-plus-team-totals__heading,
+      .sleeper-plus-team-totals__identity .sleeper-plus-team-totals__heading-row,
+      .sleeper-plus-team-totals__identity .sleeper-plus-team-totals__stats,
+      .sleeper-plus-team-totals__identity .sleeper-plus-team-totals__meta {
+        width: 100%;
+      }
+      .sleeper-plus-team-totals__stats {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 26px;
+        flex: 1 1 360px;
+        min-width: 0;
+        justify-content: flex-start;
+      }
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 48px;
+      }
+      .sleeper-plus-team-totals__identity--hidden {
+        display: none;
+      }
+      .sleeper-plus-team-totals__identity-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        width: 100%;
+      }
+      .sleeper-plus-team-totals__identity-row .avatar {
+        flex: 0 0 50px;
+        width: 50px;
+        height: 50px;
+        border-radius: 50%;
+        overflow: hidden;
+        box-shadow: 0 6px 16px rgba(2, 6, 23, 0.65);
+      }
+      .sleeper-plus-team-totals__identity-row .info {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .sleeper-plus-team-totals__identity-row .name-row {
+        font-size: 1.18rem;
+        font-weight: 700;
+        gap: 8px;
+      }
+      .sleeper-plus-team-totals__identity-row .name {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .sleeper-plus-team-totals__identity-row .info .name-row + * {
+        font-size: 0.9rem;
+        opacity: 0.8;
+      }
+      .sleeper-plus-team-totals__content {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        gap: 20px;
+      }
+      .sleeper-plus-team-totals__stack {
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .sleeper-plus-team-totals.is-hidden {
+        display: none !important;
+      }
+      .sleeper-plus-team-totals__heading-row {
+        display: flex;
+        flex-direction: row;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 4px;
+        width: 100%;
+      }
+      .sleeper-plus-team-totals__heading {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        justify-content: center;
+        gap: 4px;
+        text-transform: uppercase;
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .sleeper-plus-team-totals__header {
+        font-size: 1rem;
+        letter-spacing: 0.18em;
+        opacity: 0.78;
+      }
+      .sleeper-plus-team-totals__week {
+        font-weight: 600;
+        font-size: 0.78rem;
+        letter-spacing: 0.14em;
+        color: rgba(255, 255, 255, 0.75);
+      }
+      .sleeper-plus-team-totals__body {
+        display: flex;
+        flex-wrap: wrap;
+        width: 100%;
+        gap: 24px;
+        justify-content: space-between;
+        align-items: flex-start;
+      }
+      .sleeper-plus-team-totals__actions {
+        display: flex;
+        justify-content: flex-end;
+        align-items: flex-end;
+        flex-wrap: wrap;
+        gap: 12px;
+        flex: 0 0 auto;
+        margin-left: auto;
+        width: auto;
+        margin-top: 0;
+      }
+      .sleeper-plus-team-totals__actions--hidden {
+        display: none;
+      }
+      .sleeper-plus-team-totals__row {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        min-width: 120px;
+        gap: 4px;
+        font-variant-numeric: tabular-nums;
+      }
+      .sleeper-plus-team-totals__label {
+        opacity: 0.7;
+        text-transform: uppercase;
+        font-size: 0.72rem;
+        letter-spacing: 0.2em;
+      }
+      .sleeper-plus-team-totals__value {
+        font-weight: 650;
+        font-size: 1.9rem;
+        line-height: 1;
+        text-align: center;
+      }
+      .sleeper-plus-team-totals__row[data-variant='actual'] .sleeper-plus-team-totals__value {
+        color: #34d399;
+      }
+      .sleeper-plus-team-totals__row[data-variant='projected'] .sleeper-plus-team-totals__value {
+        color: #60a5fa;
+      }
+      .sleeper-plus-team-totals__actions-row {
+        display: inline-flex;
+        align-items: flex-end;
+        justify-content: flex-end;
+        gap: 16px;
+        margin: 0;
+        width: auto;
+        flex-wrap: nowrap;
+      }
+      .sleeper-plus-team-totals__actions-row .btn-container,
+      .sleeper-plus-team-totals__actions-row .btns {
+        margin: 0;
+        gap: 16px;
+        display: inline-flex;
+        flex-wrap: nowrap;
+        align-items: flex-end;
+      }
+      .sleeper-plus-team-totals__actions-row .action,
+      .sleeper-plus-team-totals__actions-row .btn-container > div {
+        display: inline-flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        text-align: center;
+        font-size: 0.66rem;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.75);
+      }
+      .sleeper-plus-team-totals__actions-row button,
+      .sleeper-plus-team-totals__actions-row .button,
+      .sleeper-plus-team-totals__actions-row .btn {
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.08), rgba(15, 23, 42, 0.6));
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 12px 22px rgba(2, 6, 23, 0.55);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+      }
+      .sleeper-plus-team-totals__actions-row button svg,
+      .sleeper-plus-team-totals__actions-row .button svg,
+      .sleeper-plus-team-totals__actions-row .btn svg {
+        width: 20px;
+        height: 20px;
+      }
+      .sleeper-plus-team-totals__actions-row button:hover,
+      .sleeper-plus-team-totals__actions-row .button:hover,
+      .sleeper-plus-team-totals__actions-row .btn:hover,
+      .sleeper-plus-team-totals__actions-row button:focus-visible,
+      .sleeper-plus-team-totals__actions-row .button:focus-visible,
+      .sleeper-plus-team-totals__actions-row .btn:focus-visible {
+        border-color: rgba(255, 255, 255, 0.5);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 16px 28px rgba(2, 6, 23, 0.7);
+        transform: translateY(-2px);
+      }
+      #${BUTTON_CONTAINER_ID} .sleeper-plus-settings-button-shell:hover,
+      #${BUTTON_CONTAINER_ID} .sleeper-plus-settings-button-shell:focus-within {
+        border-color: rgba(255, 255, 255, 0.5);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 16px 28px rgba(2, 6, 23, 0.7);
+        transform: translateY(-2px);
+      }
+      .sleeper-plus-team-totals__meta {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 0.66rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.65);
+        opacity: 0.9;
+        white-space: nowrap;
+        justify-content: flex-end;
+        align-self: flex-start;
+        width: auto;
+      }
+      .sleeper-plus-team-totals__error {
+        font-size: 0.75rem;
+        color: #fca5a5;
+        min-height: 18px;
+        transition: opacity 0.15s ease;
+        display: inline-flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-left: auto;
+        text-align: right;
+        flex: 0 0 auto;
+        white-space: normal;
+      }
+      .sleeper-plus-team-totals__error-text {
+        font-size: 0.75rem;
+        color: #fca5a5;
+      }
+      .sleeper-plus-team-totals__error .${REFRESH_INDICATOR_CLASS} {
+        font-size: 0.68rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.85);
+      }
+      .sleeper-plus-team-totals__row {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        min-width: 120px;
+        gap: 4px;
+        font-variant-numeric: tabular-nums;
+      }
+      .sleeper-plus-team-totals__spinner {
+        position: absolute;
+        inset: 0;
+        font-size: 0.72rem;
+        letter-spacing: 0.18em;
+        transform: translateX(-100%);
+        opacity: 0;
+        transition: opacity 0.2s ease;
+        font-size: 1.9rem;
+        line-height: 1;
+        text-align: left;
+        animation: sleeper-plus-shimmer 1.4s linear infinite;
+      }
+        display: inline-flex;
+        align-items: center;
+        gap: 16px;
+        margin: 0;
+        width: auto;
+        flex-wrap: nowrap;
+          transform: translateX(-100%);
+        }
+        to {
+          transform: translateX(100%);
+        }
       }
       .sleeper-plus-trend__chart .sleeper-plus-line.line-neutral {
         stroke: #3b82f6;
@@ -726,11 +1223,63 @@
     ];
     const SCHEDULE_KEYWORDS = ['schedule', 'matchup', 'game', 'bye', 'status'];
     const SCHEDULE_DATA_ATTRIBUTES = ['data-testid', 'data-test', 'data-qa'];
-    const GAME_STATE = {
-      PRE: 'pre',
-      LIVE: 'live',
-      FINAL: 'final',
-      BYE: 'bye',
+    const NFL_TEAM_CODES = [
+      'ARI',
+      'ATL',
+      'BAL',
+      'BUF',
+      'CAR',
+      'CHI',
+      'CIN',
+      'CLE',
+      'DAL',
+      'DEN',
+      'DET',
+      'GB',
+      'HOU',
+      'IND',
+      'JAX',
+      'JAC',
+      'KC',
+      'LAC',
+      'LAR',
+      'LA',
+      'LV',
+      'MIA',
+      'MIN',
+      'NE',
+      'NO',
+      'NYG',
+      'NYJ',
+      'PHI',
+      'PIT',
+      'SEA',
+      'SF',
+      'TB',
+      'TEN',
+      'WAS',
+      'WSH',
+    ];
+    const TEAM_CODE_SET = new Set(NFL_TEAM_CODES);
+    const TEAM_CODE_ALIASES = {
+      JAC: 'JAX',
+      WSH: 'WAS',
+    };
+    const normalizeTeamAbbr = (value) =>
+      (value || '')
+        .toString()
+        .toUpperCase()
+        .replace(/[^A-Z]/g, '');
+    const canonicalizeTeamCode = (value) => {
+      const normalized = normalizeTeamAbbr(value);
+      if (!normalized) {
+        return '';
+      }
+      return TEAM_CODE_ALIASES[normalized] || normalized;
+    };
+    const isKnownTeamCode = (value) => {
+      const normalized = normalizeTeamAbbr(value);
+      return normalized ? TEAM_CODE_SET.has(normalized) : false;
     };
 
     const normalizeScheduleText = (wrapper) =>
@@ -739,69 +1288,16 @@
         .trim()
         .toLowerCase();
 
-    const isPostKickoffState = (state) =>
-      state === GAME_STATE.LIVE || state === GAME_STATE.FINAL || state === GAME_STATE.BYE;
-
-    const isPregameState = (state) => state === GAME_STATE.PRE;
-
-    const detectScheduleGameState = (wrapper) => {
-      const text = normalizeScheduleText(wrapper);
-      if (!text) {
-        return null;
-      }
-      if (/\bbye\b/i.test(text)) {
-        return GAME_STATE.BYE;
-      }
-      if (/\b(final(?:\/ot)?|ended|complete|postponed|canceled|cancelled)\b/i.test(text)) {
-        return GAME_STATE.FINAL;
-      }
-      if (
-        /\blive\b/i.test(text) ||
-        /\bin progress\b/i.test(text) ||
-        /\b1st\b/i.test(text) ||
-        /\b2nd\b/i.test(text) ||
-        /\b3rd\b/i.test(text) ||
-        /\b4th\b/i.test(text) ||
-        /\bquarter\b/i.test(text) ||
-        /\bhalftime\b/i.test(text) ||
-        /\bot\b/i.test(text)
-      ) {
-        return GAME_STATE.LIVE;
-      }
-      if (
-        /\b(?:sun|mon|tue|wed|thu|fri|sat)\b/i.test(text) ||
-        /\b[ap]m\b/i.test(text) ||
-        /\d{1,2}:\d{2}/.test(text)
-      ) {
-        return GAME_STATE.PRE;
-      }
-      return null;
-    };
     const DATASET_PLAYER_ID = 'sleeperPlusPlayerId';
     const DATASET_STATE = 'sleeperPlusTrendState';
     const DATASET_WEEK = 'sleeperPlusWeek';
     const SVG_NS = 'http://www.w3.org/2000/svg';
-    const WEEK_ACTIVE_SELECTORS = [
-      '[data-testid*="week"][aria-pressed="true"]',
-      '[data-testid*="week"][data-selected="true"]',
-      '.week-selector [aria-pressed="true"]',
-      '.week-selector button.is-selected',
-      '.week-selector button.selected',
-      '.week-selector .selected',
-      '.week-selector .selected-option',
-      '.week-select__option.is-selected',
-      '.week-select__option[aria-current="true"]',
-      '.week-select__option[aria-selected="true"]',
-    ];
-    const WEEK_FALLBACK_SELECTOR =
-      '[data-week],[data-leg],[data-testid*="week" i],[class*="week" i],[aria-label*="week" i],[title*="week" i]';
-    const WEEK_CLICK_TARGET_SELECTOR =
-      '[data-testid*="week"],.week-selector button,.week-select__option,[class*="week-selector"] button';
     const WEEK_POLL_INTERVAL_MS = 1200;
 
     const processingMap = new WeakMap();
     const trendCache = new Map();
     const sparklineCache = new Map();
+    const sparklineSourceCache = new Map();
     const inflightTrends = new Map();
     const lookupCache = new Map();
     const inflightLookups = new Map();
@@ -818,7 +1314,6 @@
     let scanScheduled = false;
     let visibilityListenerAttached = false;
     let weekPollIntervalId = null;
-    let weekClickListenerAttached = false;
     let pendingTrendRequests = 0;
 
     const updateRefreshIndicator = () => {
@@ -881,29 +1376,6 @@
       return `${leagueId}:${resolvedWeekKey}:${playerId}`;
     };
 
-    const sendRuntimeRequest = (message, label) =>
-      new Promise((resolve, reject) => {
-        try {
-          chrome.runtime.sendMessage(message, (response) => {
-            if (chrome.runtime.lastError) {
-              reject(new Error(chrome.runtime.lastError.message));
-              return;
-            }
-            if (!response) {
-              reject(new Error(`${label} failed`));
-              return;
-            }
-            if (!response.ok) {
-              reject(new Error(response.error || `${label} failed`));
-              return;
-            }
-            resolve(response.result);
-          });
-        } catch (error) {
-          reject(error);
-        }
-      });
-
     const resolvePlayerId = async (identity) => {
       if (identity.playerId) {
         return identity.playerId;
@@ -918,7 +1390,7 @@
       if (inflightLookups.has(normalized)) {
         return inflightLookups.get(normalized);
       }
-      const request = sendRuntimeRequest(
+      const request = sendRuntimeMessage(
         { type: 'SLEEPER_PLUS_LOOKUP_PLAYER', query: { fullName: identity.fullName } },
         'player lookup'
       )
@@ -935,6 +1407,48 @@
 
       inflightLookups.set(normalized, request);
       return request;
+    };
+
+    const buildSparklineSourceSignature = (series = []) =>
+      series
+        .map((entry = {}) => {
+          const week = entry.week ?? '';
+          const actual = Number(entry.points) || 0;
+          const projected =
+            entry.projected === null || entry.projected === undefined ? 'null' : Number(entry.projected) || 0;
+          const hasActual = entry.hasActual ? '1' : '0';
+          const isFuture = entry.isFuture ? '1' : '0';
+          return `${week}:${actual}:${projected}:${hasActual}:${isFuture}`;
+        })
+        .join('|');
+
+    const stabilizeSparklineSeries = (playerId, trendPayload) => {
+      if (!playerId || !trendPayload) {
+        return trendPayload;
+      }
+      const normalizedWeek = Number.isFinite(Number(trendPayload.sparklineWeek))
+        ? Number(trendPayload.sparklineWeek)
+        : null;
+      const normalizedSeries = Array.isArray(trendPayload.weeklySeries) ? trendPayload.weeklySeries : [];
+      const signature = buildSparklineSourceSignature(normalizedSeries);
+      const cached = sparklineSourceCache.get(playerId);
+      const shouldUpdateCache =
+        !cached ||
+        cached.signature !== signature ||
+        (Number.isFinite(normalizedWeek) && Number.isFinite(cached?.week) && normalizedWeek > cached.week);
+      if (shouldUpdateCache) {
+        sparklineSourceCache.set(playerId, {
+          week: normalizedWeek,
+          series: normalizedSeries,
+          signature,
+        });
+        return { ...trendPayload, weeklySeries: normalizedSeries, sparklineWeek: normalizedWeek };
+      }
+      return {
+        ...trendPayload,
+        weeklySeries: cached.series,
+        sparklineWeek: cached.week,
+      };
     };
 
     const fetchTrendData = async (playerId, weekContext = {}) => {
@@ -958,11 +1472,12 @@
       pendingTrendRequests += 1;
       updateRefreshIndicator();
 
-      const request = sendRuntimeRequest(payload, 'trend request')
+      const request = sendRuntimeMessage(payload, 'trend request')
         .then((result) => {
+          const stabilizedResult = stabilizeSparklineSeries(playerId, result);
           inflightTrends.delete(cacheKey);
-          trendCache.set(cacheKey, result);
-          return result;
+          trendCache.set(cacheKey, stabilizedResult);
+          return stabilizedResult;
         })
         .catch((error) => {
           inflightTrends.delete(cacheKey);
@@ -1054,15 +1569,82 @@
       return opponent === 'bye' || opponent === 'bye week';
     };
 
+    const formatOrdinal = (value) => {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) {
+        return '';
+      }
+      const normalized = Math.abs(Math.trunc(numeric));
+      if (normalized === 0) {
+        return '';
+      }
+      const remainder = normalized % 100;
+      if (remainder >= 11 && remainder <= 13) {
+        return `${normalized}th`;
+      }
+      const lastDigit = normalized % 10;
+      if (lastDigit === 1) {
+        return `${normalized}st`;
+      }
+      if (lastDigit === 2) {
+        return `${normalized}nd`;
+      }
+      if (lastDigit === 3) {
+        return `${normalized}rd`;
+      }
+      return `${normalized}th`;
+    };
+
+    const getRankDescriptor = (rank, scale) => {
+      const rankValue = Number(rank);
+      if (!Number.isFinite(rankValue) || rankValue <= 0) {
+        return null;
+      }
+      const normalizedScale = Number(scale);
+      const scaleValue = Number.isFinite(normalizedScale) && normalizedScale > 0 ? normalizedScale : 32;
+      const midpoint = Math.ceil(scaleValue / 2);
+      return rankValue <= midpoint ? 'most' : 'fewest';
+    };
+
+    const isMidTierRank = (rank) => {
+      const rankValue = Number(rank);
+      if (!Number.isFinite(rankValue)) {
+        return false;
+      }
+      return rankValue >= 10 && rankValue <= 20;
+    };
+
+    const buildMatchupTooltip = (matchup) => {
+      if (!matchup) {
+        return '';
+      }
+      const opponentLabel = (matchup.opponent || '').toString().trim();
+      const positionLabel = (matchup.position || '').toString().trim();
+      const rankValue = Number(matchup.rank);
+      if (!opponentLabel || !positionLabel || !Number.isFinite(rankValue)) {
+        return '';
+      }
+      const descriptor = getRankDescriptor(rankValue, matchup.scale);
+      const ordinal = formatOrdinal(rankValue);
+      if (!descriptor || !ordinal) {
+        return '';
+      }
+      return `${opponentLabel} gives up the ${ordinal} ${descriptor} points to the ${positionLabel.toUpperCase()} position.`;
+    };
+
     const getMatchupToneClass = (rank, scale) => {
-      if (!Number.isFinite(rank) || !Number.isFinite(scale) || scale <= 0) {
+      const rankValue = Number(rank);
+      if (!Number.isFinite(rankValue)) {
         return 'matchup-neutral';
       }
-      const percentile = rank / scale;
-      if (percentile <= 1 / 3) {
+      if (isMidTierRank(rankValue)) {
+        return 'matchup-neutral';
+      }
+      const descriptor = getRankDescriptor(rankValue, scale);
+      if (descriptor === 'most') {
         return 'matchup-good';
       }
-      if (percentile >= 2 / 3) {
+      if (descriptor === 'fewest') {
         return 'matchup-bad';
       }
       return 'matchup-neutral';
@@ -1081,25 +1663,34 @@
       }
       const wrapper = document.createElement('div');
       wrapper.className = inline ? MATCHUP_INLINE_CLASS : MATCHUP_CLASS;
-      const toneClass = getMatchupToneClass(matchup.rank, matchup.scale || 32);
+      const rankValue = Number(matchup.rank);
+      const toneClass = getMatchupToneClass(rankValue, matchup.scale || 32);
       if (toneClass) {
         wrapper.classList.add(toneClass);
       }
       const projectedAllowed = Number(matchup.projectedAllowed);
-      if (Number.isFinite(projectedAllowed)) {
+      const matchupTooltip = buildMatchupTooltip(matchup);
+      if (matchupTooltip) {
+        wrapper.title = matchupTooltip;
+      } else if (Number.isFinite(projectedAllowed)) {
         const sampleText = matchup.sampleSize ? ` across ${matchup.sampleSize} player projections` : '';
         wrapper.title = `${matchup.position} vs ${matchup.opponent} projects to ${projectedAllowed.toFixed(1)} pts${sampleText}`;
       }
 
       const label = document.createElement('span');
       label.className = MATCHUP_LABEL_CLASS;
-      label.textContent = matchup.opponent ? `vs ${matchup.opponent}` : 'Matchup';
+      label.textContent = '';
+      label.hidden = true;
       wrapper.appendChild(label);
 
       const value = document.createElement('span');
       value.className = MATCHUP_VALUE_CLASS;
-      const scale = matchup.scale || 32;
-      value.textContent = `${matchup.position} #${matchup.rank}/${scale}`;
+      const scale = Number(matchup.scale) || 32;
+      if (Number.isFinite(rankValue)) {
+        value.textContent = `#${rankValue}/${scale}`;
+      } else {
+        value.textContent = 'Rank —';
+      }
       wrapper.appendChild(value);
 
       return wrapper;
@@ -1211,23 +1802,78 @@
       return item;
     };
 
-    const extractOpponentCode = (wrapper) => {
+    const stripInlineMatchupNodes = (wrapper) => {
+      if (!wrapper || typeof wrapper.cloneNode !== 'function') {
+        return null;
+      }
+      const clone = wrapper.cloneNode(true);
+      clone.querySelectorAll(`.${MATCHUP_INLINE_CLASS}`).forEach((node) => node.remove());
+      return clone;
+    };
+
+    const extractOpponentCode = (wrapper, playerTeam) => {
       if (!wrapper) {
         return '';
       }
-      const text = wrapper.textContent || '';
+      const sanitizedWrapper = stripInlineMatchupNodes(wrapper) || wrapper;
+      const text = sanitizedWrapper.textContent || '';
       if (!text) {
         return '';
       }
-      const normalized = text.replace(/[^a-z0-9@\s]/gi, ' ').toUpperCase();
+      const normalized = text.replace(/\s+/g, ' ').toUpperCase();
       if (normalized.includes('BYE')) {
         return '';
       }
-      const match = normalized.match(/(?:VS|@)\s+([A-Z]{2,4})\b/);
-      if (match && match[1]) {
-        return match[1].replace(/[^A-Z]/g, '').toUpperCase();
+      const playerCode = canonicalizeTeamCode(playerTeam);
+
+      const directMatch = normalized.match(/(?:VS\.?|V\.?|AT|@)\s*([A-Z]{2,4})\b/);
+      if (directMatch && directMatch[1]) {
+        const candidate = canonicalizeTeamCode(directMatch[1]);
+        if (candidate && isKnownTeamCode(candidate)) {
+          return candidate;
+        }
       }
-      return '';
+
+      const duelMatch = normalized.match(/\b([A-Z]{2,4})\b\s*(?:VS\.?|V\.?|AT|@)\s*\b([A-Z]{2,4})\b/);
+      if (duelMatch) {
+        const first = canonicalizeTeamCode(duelMatch[1]);
+        const second = canonicalizeTeamCode(duelMatch[2]);
+        if (playerCode && first === playerCode && second && isKnownTeamCode(second)) {
+          return second;
+        }
+        if (playerCode && second === playerCode && first && isKnownTeamCode(first)) {
+          return first;
+        }
+        if (second && isKnownTeamCode(second)) {
+          return second;
+        }
+      }
+
+      const tokens = [];
+      const tokenPattern = /\b([A-Z]{2,4})\b/g;
+      let match;
+      while ((match = tokenPattern.exec(normalized))) {
+        const token = canonicalizeTeamCode(match[1]);
+        if (token && isKnownTeamCode(token) && !tokens.includes(token)) {
+          tokens.push(token);
+        }
+      }
+
+      if (tokens.length === 0) {
+        return '';
+      }
+
+      if (playerCode) {
+        const opponentToken = tokens.find((token) => token !== playerCode);
+        if (opponentToken) {
+          return opponentToken;
+        }
+        if (tokens.length === 1 && tokens[0] === playerCode) {
+          return '';
+        }
+      }
+
+      return tokens[tokens.length - 1];
     };
 
     const buildFallbackMatchup = (data, item, scheduleWrapper) => {
@@ -1235,35 +1881,95 @@
         return null;
       }
       const hostWrapper = scheduleWrapper || findScheduleWrapper(item);
-      const opponentCode = extractOpponentCode(hostWrapper);
+      const normalizedScheduleText = normalizeScheduleText(hostWrapper);
+      const positionHints = [
+        data.matchup?.position,
+        data.positionRank?.position,
+        data.primaryPosition,
+      ]
+        .map((value) => (value || '').toString().toUpperCase())
+        .filter((value, index, array) => value && value !== 'UNK' && array.indexOf(value) === index);
+      const opponentCode = extractOpponentCode(hostWrapper, data?.nflTeam || data?.team);
+      const isByeOpponent = !opponentCode && normalizedScheduleText?.includes('bye');
       if (!opponentCode) {
+        if (isByeOpponent) {
+          const fallbackPosition = positionHints[0] || 'UNK';
+          return {
+            opponent: 'bye',
+            position: fallbackPosition,
+            rank: null,
+            scale: data.matchup?.scale || 32,
+            sampleSize: 0,
+            projectedAllowed: null,
+            playerProjection: 0,
+            derived: true,
+          };
+        }
+        console.debug('Sleeper+ fallback matchup missing opponent code', {
+          playerId: data?.playerId || item?.dataset?.[DATASET_PLAYER_ID] || null,
+          primaryPosition: data.primaryPosition,
+          playerTeam: data?.nflTeam || data?.team || null,
+        });
         return null;
       }
-      const positionCandidate = data.positionRank?.position || data.matchup?.position || data.primaryPosition;
-      const position = positionCandidate && positionCandidate !== 'UNK' ? positionCandidate : null;
-      if (!position) {
+      const normalizedOpponent = opponentCode.toUpperCase().replace(/[^A-Z]/g, '');
+      if (!normalizedOpponent) {
         return null;
       }
-      const ranksForPosition = data.opponentRanks[position] || data.opponentRanks[position.toUpperCase()];
-      if (!ranksForPosition) {
+
+      const ranksByPosition = data.opponentRanks || {};
+      const findEntry = () => {
+        for (let index = 0; index < positionHints.length; index += 1) {
+          const hint = positionHints[index];
+          const table = ranksByPosition[hint] || ranksByPosition[hint.toUpperCase?.()];
+          if (!table) {
+            continue;
+          }
+          const entry =
+            table[normalizedOpponent] ||
+            table[normalizedOpponent.replace(/^@/, '')] ||
+            table[`@${normalizedOpponent}`];
+          if (entry) {
+            return { table, position: hint, entry };
+          }
+        }
+        const allPositions = Object.keys(ranksByPosition || {});
+        for (let index = 0; index < allPositions.length; index += 1) {
+          const table = ranksByPosition[allPositions[index]];
+          if (!table) {
+            continue;
+          }
+          const entry =
+            table[normalizedOpponent] ||
+            table[normalizedOpponent.replace(/^@/, '')] ||
+            table[`@${normalizedOpponent}`];
+          if (entry) {
+            return { table, position: allPositions[index], entry };
+          }
+        }
+        return null;
+      };
+
+      const resolution = findEntry();
+      if (!resolution) {
+        console.debug('Sleeper+ fallback matchup unable to resolve opponent', {
+          playerId: data?.playerId || item?.dataset?.[DATASET_PLAYER_ID] || null,
+          opponent: normalizedOpponent,
+          positions: positionHints,
+          availablePositions: Object.keys(ranksByPosition || {}),
+          playerTeam: data?.nflTeam || data?.team || null,
+        });
         return null;
       }
-      const normalizedOpponent = opponentCode.toUpperCase();
-      const sanitizedOpponent = normalizedOpponent.replace(/[^A-Z]/g, '');
-      const rankingEntry =
-        ranksForPosition[normalizedOpponent] ||
-        ranksForPosition[sanitizedOpponent] ||
-        ranksForPosition[normalizedOpponent.replace(/^@/, '')];
-      if (!rankingEntry) {
-        return null;
-      }
+
+      const { position, entry } = resolution;
       return {
-        opponent: sanitizedOpponent || normalizedOpponent,
+        opponent: normalizedOpponent,
         position,
-        rank: rankingEntry.rank,
-        scale: rankingEntry.scale,
-        sampleSize: rankingEntry.count,
-        projectedAllowed: rankingEntry.total,
+        rank: entry.rank,
+        scale: entry.scale,
+        sampleSize: entry.count,
+        projectedAllowed: entry.total,
         playerProjection: 0,
         derived: true,
       };
@@ -1339,30 +2045,37 @@
       }
 
       const rankValue = Number(matchup?.rank);
+      const isByeOpponent = Boolean(matchup && isByeMatchup(matchup));
       const hasValidOpponent =
         matchup &&
-        !isByeMatchup(matchup) &&
+        !isByeOpponent &&
         matchup.opponent &&
         matchup.position &&
         Number.isFinite(rankValue);
 
-      if (!hasValidOpponent) {
-        label.textContent = 'Matchup';
-        value.textContent = 'Rank —';
-        node.classList.add('placeholder');
-        node.removeAttribute('title');
+      if (hasValidOpponent) {
+        label.textContent = '';
+        label.hidden = true;
+        const scale = Number(matchup.scale) || 32;
+        value.textContent = `#${rankValue}/${scale}`;
+        const matchupTooltip = buildMatchupTooltip(matchup);
+        if (matchupTooltip) {
+          node.title = matchupTooltip;
+        } else {
+          node.removeAttribute('title');
+        }
+        const toneClass = getMatchupToneClass(rankValue, scale);
+        if (toneClass) {
+          node.classList.add(toneClass);
+        }
         return;
       }
 
-      const opponentLabel = matchup.opponent.toString().trim() || '—';
-      label.textContent = `vs ${opponentLabel}`;
-      const scale = Number(matchup.scale) || 32;
-      value.textContent = `${matchup.position} #${rankValue}/${scale}`;
-      node.title = `${matchup.position} vs ${opponentLabel} ranks ${rankValue} of ${scale}`;
-      const toneClass = getMatchupToneClass(rankValue, scale);
-      if (toneClass) {
-        node.classList.add(toneClass);
-      }
+      label.hidden = true;
+      label.textContent = '';
+      node.classList.add('placeholder');
+      node.removeAttribute('title');
+      value.textContent = isByeOpponent ? 'n/a' : '—';
     };
 
     const ensureInlinePlaceholder = (item, scheduleWrapper) => {
@@ -1391,7 +2104,7 @@
       return true;
     };
 
-    const buildSeriesSignature = (series = [], weekNumber = null, { gameState } = {}) => {
+    const buildSeriesSignature = (series = [], weekNumber = null) => {
       const entries = series
         .map((entry = {}) => {
           const week = entry.week ?? '';
@@ -1404,11 +2117,10 @@
         })
         .join('|');
       const normalizedWeek = Number.isFinite(weekNumber) ? weekNumber : 'auto';
-      const normalizedState = gameState || 'unknown';
-      return `${normalizedWeek}::${normalizedState}::${entries}`;
+      return `${normalizedWeek}::${entries}`;
     };
 
-    const getPlayerSparkline = (playerId, series, { weekNumber, gameState } = {}) => {
+    const getPlayerSparkline = (playerId, series, { weekNumber } = {}) => {
       if (!series || series.length === 0) {
         if (playerId) {
           sparklineCache.delete(playerId);
@@ -1416,14 +2128,14 @@
         return null;
       }
       if (!playerId) {
-        return createSparkline(series, weekNumber, { gameState });
+        return createSparkline(series, weekNumber);
       }
-      const signature = buildSeriesSignature(series, weekNumber, { gameState });
+      const signature = buildSeriesSignature(series, weekNumber);
       const cached = sparklineCache.get(playerId);
       if (cached?.signature === signature && cached.svg) {
         return cached.svg.cloneNode(true);
       }
-      const sparkline = createSparkline(series, weekNumber, { gameState });
+      const sparkline = createSparkline(series, weekNumber);
       if (!sparkline) {
         return null;
       }
@@ -1431,59 +2143,27 @@
       return sparkline;
     };
 
-    const inferHasActual = (entry, actualValue, context = {}) => {
-      const currentWeekNumber = Number.isFinite(context.currentWeekNumber)
-        ? Number(context.currentWeekNumber)
-        : null;
-      const normalizedState = (context.gameState || '').toLowerCase();
-      const hasStateInfo = Boolean(normalizedState);
-      const gameStarted = isPostKickoffState(normalizedState);
-      const pregameState = isPregameState(normalizedState);
-      const isCurrentWeek = isCurrentWeekEntry(entry, currentWeekNumber);
-
-      if (!isCurrentWeek) {
-        return entry.hasActual !== undefined ? Boolean(entry.hasActual) : true;
-      }
-
-      if (entry.hasActual !== undefined) {
-        if (gameStarted) {
-          return true;
-        }
-        if (pregameState) {
-          return false;
-        }
-        if (!hasStateInfo) {
-          if (!Number.isFinite(actualValue)) {
-            return false;
-          }
-          return actualValue !== 0;
-        }
-        return Boolean(entry.hasActual);
-      }
-
-      if (!Number.isFinite(actualValue)) {
+    const inferHasActual = (entry, actualValue) => {
+      if (!entry) {
         return false;
       }
-
-      if (gameStarted) {
+      if (entry.hasActual !== undefined) {
+        return Boolean(entry.hasActual);
+      }
+      if (!entry.isFuture && Number.isFinite(actualValue)) {
         return true;
       }
-
-      if (!hasStateInfo) {
-        return actualValue !== 0;
-      }
-
       return false;
     };
 
-    const resolveEntryValue = (entry, context = {}) => {
+    const resolveEntryValue = (entry, currentWeekNumber) => {
       if (!entry) {
         return 0;
       }
       const actual = Number(entry.points);
       const projected = Number(entry.projected);
-      const hasActualData = inferHasActual(entry, actual, context);
-      const isCurrentWeek = isCurrentWeekEntry(entry, context.currentWeekNumber);
+      const hasActualData = inferHasActual(entry, actual);
+      const isCurrentWeek = isCurrentWeekEntry(entry, currentWeekNumber);
       const shouldUseProjection = isCurrentWeek && !hasActualData;
       if (shouldUseProjection && Number.isFinite(projected)) {
         return projected;
@@ -1497,11 +2177,11 @@
       return 0;
     };
 
-    const buildSparklinePoints = (series, width, height, context = {}) => {
+    const buildSparklinePoints = (series, width, height, currentWeekNumber) => {
       if (!series || series.length === 0) {
         return { linePoints: '', areaPoints: '', coords: [] };
       }
-      const resolvedValues = series.map((entry) => resolveEntryValue(entry, context));
+      const resolvedValues = series.map((entry) => resolveEntryValue(entry, currentWeekNumber));
       const actualValues = resolvedValues;
       const projectionValues = series
         .map((entry) => (entry.projected !== null && entry.projected !== undefined ? Number(entry.projected) : null))
@@ -1572,7 +2252,7 @@
       return Number.isFinite(entryWeek) && entryWeek === currentWeekNumber;
     };
 
-    const classifyWeek = (entry, currentWeekNumber, context = {}) => {
+    const classifyWeek = (entry, currentWeekNumber) => {
       if (!entry) {
         return 'neutral';
       }
@@ -1580,29 +2260,28 @@
       const projectedValue =
         entry.projected === null || entry.projected === undefined ? null : Number(entry.projected);
       const normalizedProjected = Number.isFinite(projectedValue) ? projectedValue : null;
-      const classificationContext = { ...context, currentWeekNumber };
       const isCurrentWeek = isCurrentWeekEntry(entry, currentWeekNumber);
-      const hasActualData = inferHasActual(entry, actual, classificationContext);
+      const hasActualData = inferHasActual(entry, actual);
       if (isCurrentWeek && !hasActualData) {
         return 'current';
       }
-      if (normalizedProjected === null) {
+      if (!hasActualData || normalizedProjected === null) {
         return 'neutral';
       }
       const resolvedActual = Number.isFinite(actual) ? actual : 0;
       return resolvedActual >= normalizedProjected ? 'over' : 'under';
     };
 
-    const segmentLinePoints = (coords, series, currentWeekNumber, context = {}) => {
+    const segmentLinePoints = (coords, series, currentWeekNumber) => {
       if (!coords || coords.length === 0 || !series || series.length === 0) {
         return [];
       }
       const segments = [];
-      let currentClass = classifyWeek(series[0], currentWeekNumber, context);
+      let currentClass = classifyWeek(series[0], currentWeekNumber);
       let currentPoints = [coords[0]];
 
       for (let index = 1; index < coords.length; index += 1) {
-        const nextClass = classifyWeek(series[index], currentWeekNumber, context);
+        const nextClass = classifyWeek(series[index], currentWeekNumber);
         const point = coords[index];
         if (nextClass !== currentClass) {
           if (currentPoints.length >= 2) {
@@ -1626,7 +2305,7 @@
     // the full current-season schedule, sourcing projections for future weeks,
     // rendering those projected-only points/segments in teal, and highlighting
     // the active week marker/segment in gold for quick visual orientation.
-    const createSparkline = (series, overrideWeekNumber = null, { gameState } = {}) => {
+    const createSparkline = (series, overrideWeekNumber = null) => {
       if (!series || series.length === 0) {
         return null;
       }
@@ -1635,8 +2314,7 @@
       const currentWeekNumber = Number.isFinite(overrideWeekNumber)
         ? Number(overrideWeekNumber)
         : getCurrentWeekNumber();
-      const pointContext = { currentWeekNumber, gameState };
-      const { areaPoints, coords, min, range } = buildSparklinePoints(series, width, height, pointContext);
+      const { areaPoints, coords, min, range } = buildSparklinePoints(series, width, height, currentWeekNumber);
       if (!coords || coords.length === 0) {
         return null;
       }
@@ -1657,9 +2335,9 @@
         svg.appendChild(area);
       }
 
-      const segments = segmentLinePoints(actualCoords, actualSeries, currentWeekNumber, pointContext);
+      const segments = segmentLinePoints(actualCoords, actualSeries, currentWeekNumber);
       if (segments.length === 0 && actualCoords.length > 0) {
-        const fallbackClass = classifyWeek(actualSeries[0], currentWeekNumber, pointContext);
+        const fallbackClass = classifyWeek(actualSeries[0], currentWeekNumber);
         const fallbackPoints =
           actualCoords.length === 1 ? [actualCoords[0], actualCoords[0]] : actualCoords;
         segments.push({ classification: fallbackClass, points: fallbackPoints });
@@ -1750,7 +2428,7 @@
         } else {
           circle.setAttribute('cx', x);
           circle.setAttribute('cy', y);
-          const classification = classifyWeek(dataPoint, currentWeekNumber, pointContext);
+          const classification = classifyWeek(dataPoint, currentWeekNumber);
           circle.classList.add('sleeper-plus-dot', classification);
           circle.style.fill = LINE_COLORS[classification] || LINE_COLORS.neutral;
         }
@@ -1776,7 +2454,6 @@
     const renderMessage = (item, message, { weekKey, overlayRoster } = {}) => {
       removeTrend(item);
       const scheduleWrapper = findScheduleWrapper(item);
-      const localGameState = detectScheduleGameState(scheduleWrapper);
       const host = resolveTrendHost(scheduleWrapper, item);
       const trendRowHost =
         (host instanceof Element ? host.closest('.row') : null) ||
@@ -1802,7 +2479,6 @@
     const renderTrend = (item, data, { weekKey, overlayRoster } = {}) => {
       removeTrend(item);
       const scheduleWrapper = findScheduleWrapper(item);
-      const localGameState = detectScheduleGameState(scheduleWrapper);
       const host = resolveTrendHost(scheduleWrapper, item);
       const trendRowHost =
         (host instanceof Element ? host.closest('.row') : null) ||
@@ -1856,6 +2532,22 @@
       const allowOpponentDetails = showOpponentRanks && !overlayRoster;
       if (allowOpponentDetails) {
         const matchupData = data.matchup || buildFallbackMatchup(data, item, scheduleWrapper);
+        if (matchupData) {
+          console.debug('Sleeper+ inline matchup payload', {
+            playerId: data?.playerId || item?.dataset?.[DATASET_PLAYER_ID] || null,
+            source: data.matchup ? 'direct' : 'fallback',
+            opponent: matchupData.opponent,
+            rank: matchupData.rank,
+            scale: matchupData.scale,
+          });
+        } else {
+          console.info('Sleeper+ inline matchup missing', {
+            playerId: data?.playerId || item?.dataset?.[DATASET_PLAYER_ID] || null,
+            hasOpponentRanks: Boolean(data.opponentRanks),
+            primaryPosition: data.primaryPosition,
+            playerTeam: data?.nflTeam || data?.team || null,
+          });
+        }
         const attachedInline = updateInlineMatchup(item, matchupData || null, scheduleWrapper);
         if (matchupData && !attachedInline) {
           const matchupNode = createMatchupNode(matchupData);
@@ -1870,10 +2562,15 @@
       const playerChartId = item?.dataset?.[DATASET_PLAYER_ID] || '';
       const allowSparkline = (!overlayRoster && enableTrendOverlays) || (overlayRoster && showSparklineAlways);
       let chart = null;
+      const activeWeekNumber = getCurrentWeekNumber();
+      const resolvedSparklineWeek = Number.isFinite(activeWeekNumber)
+        ? activeWeekNumber
+        : Number.isFinite(data.sparklineWeek)
+          ? Number(data.sparklineWeek)
+          : undefined;
       if (allowSparkline) {
         chart = getPlayerSparkline(playerChartId, data.weeklySeries, {
-          weekNumber: Number.isFinite(data.sparklineWeek) ? Number(data.sparklineWeek) : undefined,
-          gameState: localGameState,
+          weekNumber: resolvedSparklineWeek,
         });
       }
       if (allowSparkline && chart) {
@@ -1919,8 +2616,9 @@
             return;
           }
           const currentWeekKey = getCurrentWeekKey();
+          const priorId = item.dataset[DATASET_PLAYER_ID];
           if (
-            item.dataset[DATASET_PLAYER_ID] === resolvedId &&
+            priorId === resolvedId &&
             item.dataset[DATASET_STATE] === 'ready' &&
             item.dataset[DATASET_WEEK] === currentWeekKey
           ) {
@@ -1976,146 +2674,37 @@
 
     const withinWeekBounds = (value) => Number.isFinite(value) && value >= 1 && value <= 30;
 
-    const parseWeekFromString = (value) => {
-      if (value === null || value === undefined) {
-        return null;
+    const applyActiveWeek = (nextWeek) => {
+      if (!withinWeekBounds(nextWeek) || nextWeek === activeWeek) {
+        return false;
       }
-      const normalized = value.toString().trim();
-      if (!normalized) {
-        return null;
+      activeWeek = nextWeek;
+      if (running) {
+        cleanupAll();
+        scheduleScan();
       }
-      const direct = Number(normalized);
-      if (withinWeekBounds(direct)) {
-        return direct;
-      }
-      const keywordMatch = normalized.match(/(?:week|wk|leg)[^0-9]{0,10}(\d{1,2})/i);
-      if (keywordMatch) {
-        const candidate = Number(keywordMatch[1]);
-        if (withinWeekBounds(candidate)) {
-          return candidate;
-        }
-      }
-      const suffixMatch = normalized.match(/(\d{1,2})(?:st|nd|rd|th)?\s*(?:week|wk|leg)/i);
-      if (suffixMatch) {
-        const candidate = Number(suffixMatch[1]);
-        if (withinWeekBounds(candidate)) {
-          return candidate;
-        }
-      }
-      const digitsOnly = normalized.replace(/[^0-9]/g, '');
-      if (digitsOnly && digitsOnly.length <= 2) {
-        const candidate = Number(digitsOnly);
-        if (withinWeekBounds(candidate)) {
-          return candidate;
-        }
-      }
-      return null;
+      return true;
     };
 
-    const extractWeekFromElement = (element) => {
-      if (!element) {
-        return null;
-      }
-      const attributeCandidates = [
-        element.getAttribute?.('data-week'),
-        element.getAttribute?.('data-leg'),
-        element.getAttribute?.('data-value'),
-        element.getAttribute?.('data-option'),
-        element.dataset?.week,
-        element.dataset?.leg,
-        element.dataset?.value,
-        element.dataset?.option,
-        element.id,
-        element.getAttribute?.('data-testid'),
-        element.getAttribute?.('aria-label'),
-        element.getAttribute?.('title'),
-        element.value,
-      ];
-      for (let index = 0; index < attributeCandidates.length; index += 1) {
-        const parsed = parseWeekFromString(attributeCandidates[index]);
-        if (withinWeekBounds(parsed)) {
-          return parsed;
-        }
-      }
-      const textContent = element.textContent?.trim();
-      if (textContent) {
-        const parsedText = parseWeekFromString(textContent);
-        if (withinWeekBounds(parsedText)) {
-          return parsedText;
-        }
-      }
-      return null;
-    };
-
-    const detectDisplayedWeek = () => {
-      for (let selectorIndex = 0; selectorIndex < WEEK_ACTIVE_SELECTORS.length; selectorIndex += 1) {
-        const selector = WEEK_ACTIVE_SELECTORS[selectorIndex];
-        if (!selector) {
-          continue;
-        }
-        const nodes = document.querySelectorAll(selector);
-        for (let nodeIndex = 0; nodeIndex < nodes.length; nodeIndex += 1) {
-          const week = extractWeekFromElement(nodes[nodeIndex]);
-          if (withinWeekBounds(week)) {
-            return week;
-          }
-        }
-      }
-      const fallbackNodes = Array.from(document.querySelectorAll(WEEK_FALLBACK_SELECTOR)).slice(0, 50);
-      for (let index = 0; index < fallbackNodes.length; index += 1) {
-        const week = extractWeekFromElement(fallbackNodes[index]);
-        if (withinWeekBounds(week)) {
-          return week;
-        }
-      }
-      return null;
-    };
-
-    const pollDisplayedWeek = () => {
-      if (!running) {
+    const syncWeekFromService = () => {
+      const targetLeagueId = leagueId || getCurrentLeagueId();
+      if (!targetLeagueId) {
         return;
       }
-      const detectedWeek = detectDisplayedWeek();
-      if (!withinWeekBounds(detectedWeek) || detectedWeek === activeWeek) {
-        return;
-      }
-      activeWeek = detectedWeek;
-      cleanupAll();
-      scheduleScan();
-    };
-
-    const handleWeekSelectorClick = (event) => {
-      const target = event?.target instanceof Element ? event.target.closest(WEEK_CLICK_TARGET_SELECTOR) : null;
-      if (!target) {
-        return;
-      }
-      window.requestAnimationFrame(() => pollDisplayedWeek());
-      window.setTimeout(() => pollDisplayedWeek(), 250);
-    };
-
-    const attachWeekClickListener = () => {
-      if (weekClickListenerAttached) {
-        return;
-      }
-      document.addEventListener('click', handleWeekSelectorClick, true);
-      weekClickListenerAttached = true;
-    };
-
-    const detachWeekClickListener = () => {
-      if (!weekClickListenerAttached) {
-        return;
-      }
-      document.removeEventListener('click', handleWeekSelectorClick, true);
-      weekClickListenerAttached = false;
+      activeWeekService
+        .fetchWeek(targetLeagueId)
+        .then((week) => applyActiveWeek(week))
+        .catch((error) => {
+          console.debug('Sleeper+ week sync failed', error);
+        });
     };
 
     const startWeekWatch = () => {
       if (weekPollIntervalId) {
         return;
       }
-      pollDisplayedWeek();
-      weekPollIntervalId = window.setInterval(() => pollDisplayedWeek(), WEEK_POLL_INTERVAL_MS);
-      attachWeekClickListener();
+      syncWeekFromService();
+      weekPollIntervalId = window.setInterval(() => syncWeekFromService(), WEEK_POLL_INTERVAL_MS);
     };
 
     const stopWeekWatch = () => {
@@ -2123,7 +2712,6 @@
         window.clearInterval(weekPollIntervalId);
         weekPollIntervalId = null;
       }
-      detachWeekClickListener();
       activeWeek = null;
     };
 
@@ -2271,13 +2859,17 @@
       cleanupAll();
       trendCache.clear();
       sparklineCache.clear();
+      sparklineSourceCache.clear();
       inflightTrends.clear();
       pendingTrendRequests = 0;
       updateRefreshIndicator();
       if (!leagueId) {
         stop();
-      } else if (running) {
-        scheduleScan();
+      } else {
+        syncWeekFromService();
+        if (running) {
+          scheduleScan();
+        }
       }
     };
 
@@ -2299,137 +2891,1048 @@
     return { update, refresh, stop };
   })();
 
-  const injectSettingsButton = () => {
-    if (!shouldDisplaySettingsButton()) {
-      return false;
-    }
+  const teamTotalsController = (() => {
+    const PANEL_ID = 'sleeper-plus-team-totals';
+    const PANEL_CLASS = 'sleeper-plus-team-totals';
+    const PANEL_HIDDEN_CLASS = 'is-hidden';
+    const PANEL_LOADING_CLASS = 'is-loading';
+    const USER_TAB_HOST_CLASS = 'sleeper-plus-user-tab-host';
+    const USER_TAB_ROW_CLASS = 'sleeper-plus-user-tab-row';
+    const IDENTITY_PLACEHOLDER_CLASS = 'sleeper-plus-identity-placeholder';
+    const WEEK_DETECT_SELECTORS = [
+      '.week-nav button[aria-pressed="true"],.week-nav button.is-active',
+      '.week-nav__value',
+      '[data-testid*="week-nav" i]',
+      '[aria-label*="week" i][aria-pressed="true"]',
+      '[data-testid*="week" i][aria-pressed="true"]',
+      '.week-selector button.is-selected',
+      '.week-selector .week.is-selected',
+      '.week-selector .week.selected',
+      '.week-select__option[aria-selected="true"]',
+      '.week-select__option.is-selected',
+      '.week-select__value',
+      '[class*="week-value" i]',
+    ];
+    const WEEK_FALLBACK_SELECTOR =
+      '.week-nav button,.week-nav__value,[data-week],[data-leg],[data-testid*="week" i],[class*="week" i],[aria-label*="week" i],[title*="week" i]';
+    const WEEK_CLICK_TARGET_SELECTOR =
+      '[data-testid*="week" i],.week-selector button,.week-select__option,[class*="week-selector" i] button,.week-nav button';
+    const BENCH_HEADER_KEYWORDS = ['bench', 'reserve', 'taxi'];
+    const BENCH_SLOT_TOKENS = ['bn', 'bench', 'reserve', 'ir', 'injured', 'covid', 'out', 'taxi'];
+    const LINEUP_INTERACTION_EVENTS = ['mouseup', 'touchend', 'keyup'];
+    const WEEK_POLL_INTERVAL_MS = 1500;
 
-    if (document.getElementById(BUTTON_CONTAINER_ID)) {
-      return true;
-    }
+    let running = false;
+    let leagueId = '';
+    let rosterId = '';
+    let refreshScheduled = false;
+    let pendingForceRefresh = false;
+    let lastContextSignature = '';
+    let inflightRequestId = 0;
+    let currentWeek = null;
 
-    const target = document.querySelector('.settings-header-container');
-    if (!target || !target.parentElement) {
-      return false;
-    }
+    let panelRefs = null;
+    let rosterObserver = null;
+    let observedRoster = null;
+    let rosterWatchInterval = null;
+    let weekPollIntervalId = null;
+    let weekClickListenerAttached = false;
+    let visibilityListenerAttached = false;
+    let interactionListenerAttached = false;
 
-    const parent = target.parentElement;
+    const isElementVisible = (element) => {
+      if (!element || !element.isConnected) {
+        return false;
+      }
+      if (element.offsetParent) {
+        return true;
+      }
+      const rect = element.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) {
+        return false;
+      }
+      const style = window.getComputedStyle(element);
+      if (!style) {
+        return true;
+      }
+      if (style.display === 'none' || style.visibility === 'hidden') {
+        return false;
+      }
+      return Number(style.opacity || 1) !== 0;
+    };
 
-    const openOptions = () => {
-      const fallback = () => {
-        chrome.runtime.sendMessage({ type: 'SLEEPER_PLUS_OPEN_OPTIONS' });
-      };
+    const findNearbyUserTabMenu = () => {
+      const roster = document.querySelector('.team-roster');
+      if (!roster) {
+        return null;
+      }
+      let ancestor = roster.parentElement;
+      while (ancestor && ancestor !== document.body) {
+        const menu = ancestor.querySelector('.user-tab-menu');
+        if (menu) {
+          return menu;
+        }
+        ancestor = ancestor.parentElement;
+      }
+      return null;
+    };
 
-      try {
-        chrome.runtime.openOptionsPage(() => {
-          if (chrome.runtime.lastError) {
-            fallback();
+    const resolvePanelHost = () => {
+      const nearby = findNearbyUserTabMenu();
+      if (isElementVisible(nearby)) {
+        return nearby;
+      }
+      const menus = Array.from(document.querySelectorAll('.user-tab-menu'));
+      return menus.find((menu) => isElementVisible(menu)) || nearby || null;
+    };
+
+    const withinWeekBounds = (value) => Number.isFinite(value) && value >= 1 && value <= 30;
+
+    const parseWeekFromValue = (value) => {
+      if (value === null || value === undefined) {
+        return null;
+      }
+      const normalized = value.toString().trim();
+      if (!normalized) {
+        return null;
+      }
+      const direct = Number(normalized);
+      if (withinWeekBounds(direct)) {
+        return direct;
+      }
+      const keywordMatch = normalized.match(/(?:week|wk|leg)[^0-9]{0,6}(\d{1,2})/i);
+      if (keywordMatch) {
+        const candidate = Number(keywordMatch[1]);
+        if (withinWeekBounds(candidate)) {
+          return candidate;
+        }
+      }
+      const digits = normalized.replace(/[^0-9]/g, '');
+      if (digits) {
+        const numeric = Number(digits);
+        if (withinWeekBounds(numeric)) {
+          return numeric;
+        }
+      }
+      return null;
+    };
+
+    const extractWeekFromElement = (element) => {
+      if (!(element instanceof Element)) {
+        return null;
+      }
+      const dataAttributes = element.dataset ? Object.values(element.dataset) : [];
+      const attributeCandidates = [
+        element.getAttribute('data-week'),
+        element.getAttribute('data-leg'),
+        element.getAttribute('data-value'),
+        element.getAttribute('data-option'),
+        element.getAttribute('aria-label'),
+        element.getAttribute('title'),
+        element.textContent,
+        ...dataAttributes,
+      ];
+      for (let index = 0; index < attributeCandidates.length; index += 1) {
+        const parsed = parseWeekFromValue(attributeCandidates[index]);
+        if (withinWeekBounds(parsed)) {
+          return parsed;
+        }
+      }
+      return null;
+    };
+
+    const detectDisplayedWeekNumber = () => {
+      for (let index = 0; index < WEEK_DETECT_SELECTORS.length; index += 1) {
+        const selector = WEEK_DETECT_SELECTORS[index];
+        if (!selector) {
+          continue;
+        }
+        const nodes = document.querySelectorAll(selector);
+        for (let nodeIndex = 0; nodeIndex < nodes.length; nodeIndex += 1) {
+          const parsed = extractWeekFromElement(nodes[nodeIndex]);
+          if (withinWeekBounds(parsed)) {
+            nodes[nodeIndex].dataset.sleeperPlusWeek = String(parsed);
+            return parsed;
           }
-        });
+        }
+      }
+      const fallbackNodes = Array.from(document.querySelectorAll(WEEK_FALLBACK_SELECTOR)).slice(0, 50);
+      for (let index = 0; index < fallbackNodes.length; index += 1) {
+        const parsed = extractWeekFromElement(fallbackNodes[index]);
+        if (withinWeekBounds(parsed)) {
+          return parsed;
+        }
+      }
+      try {
+        const params = new URLSearchParams(window.location.search || '');
+        const fromQuery = parseWeekFromValue(params.get('week'));
+        if (withinWeekBounds(fromQuery)) {
+          return fromQuery;
+        }
       } catch (_error) {
-        fallback();
+        // ignore
+      }
+      return null;
+    };
+
+    const setCurrentWeek = (detected) => {
+      if (Number.isFinite(detected) && detected !== currentWeek) {
+        currentWeek = detected;
+        scheduleRefresh({ force: true });
       }
     };
 
-    parent.classList.add(SETTINGS_PARENT_CLASS);
+    const syncWeekFromService = () => {
+      const targetLeagueId = leagueId || getCurrentLeagueId();
+      if (!targetLeagueId) {
+        return;
+      }
+      activeWeekService
+        .fetchWeek(targetLeagueId)
+        .then((week) => {
+          if (withinWeekBounds(week)) {
+            setCurrentWeek(week);
+          }
+        })
+        .catch((error) => {
+          console.debug('Sleeper+ totals week sync failed', error);
+        });
+    };
 
+    const handleWeekInteraction = (event) => {
+      const target = event?.target instanceof Element ? event.target.closest(WEEK_CLICK_TARGET_SELECTOR) : null;
+      if (!target) {
+        return;
+      }
+      window.requestAnimationFrame(() => setCurrentWeek(detectDisplayedWeekNumber()));
+      window.setTimeout(() => setCurrentWeek(detectDisplayedWeekNumber()), 250);
+    };
+
+    const startWeekWatcher = () => {
+      if (weekPollIntervalId) {
+        return;
+      }
+      syncWeekFromService();
+      setCurrentWeek(detectDisplayedWeekNumber());
+      weekPollIntervalId = window.setInterval(() => setCurrentWeek(detectDisplayedWeekNumber()), WEEK_POLL_INTERVAL_MS);
+      if (!weekClickListenerAttached) {
+        document.addEventListener('click', handleWeekInteraction, true);
+        weekClickListenerAttached = true;
+      }
+    };
+
+    const stopWeekWatcher = () => {
+      if (weekPollIntervalId) {
+        window.clearInterval(weekPollIntervalId);
+        weekPollIntervalId = null;
+      }
+      if (weekClickListenerAttached) {
+        document.removeEventListener('click', handleWeekInteraction, true);
+        weekClickListenerAttached = false;
+      }
+      currentWeek = null;
+    };
+
+    const identityPlaceholderMap = new WeakMap();
+
+    const ensureIdentityPlaceholder = (node) => {
+      if (!node || identityPlaceholderMap.has(node)) {
+        return identityPlaceholderMap.get(node) || null;
+      }
+      const placeholder = document.createElement('div');
+      placeholder.className = IDENTITY_PLACEHOLDER_CLASS;
+      placeholder.style.display = 'none';
+      if (node.parentElement) {
+        node.parentElement.insertBefore(placeholder, node);
+      }
+      identityPlaceholderMap.set(node, placeholder);
+      return placeholder;
+    };
+
+    const restoreIdentityRow = (node, fallbackParent) => {
+      if (!node) {
+        return;
+      }
+      const placeholder = identityPlaceholderMap.get(node);
+      if (placeholder?.parentElement) {
+        placeholder.parentElement.insertAdjacentElement('afterend', node);
+      } else if (fallbackParent) {
+        fallbackParent.insertBefore(node, fallbackParent.firstChild || null);
+      }
+      if (placeholder) {
+        placeholder.remove();
+        identityPlaceholderMap.delete(node);
+      }
+      node.classList.remove(`${PANEL_CLASS}__identity-row`);
+    };
+
+    const actionsPlaceholderMap = new WeakMap();
+
+    const ensureActionsPlaceholder = (node) => {
+      if (!node || actionsPlaceholderMap.has(node)) {
+        return actionsPlaceholderMap.get(node) || null;
+      }
+      const placeholder = document.createElement('div');
+      placeholder.className = 'sleeper-plus-actions-placeholder';
+      placeholder.style.display = 'none';
+      if (node.parentElement) {
+        node.parentElement.insertBefore(placeholder, node);
+      }
+      actionsPlaceholderMap.set(node, placeholder);
+      return placeholder;
+    };
+
+    const restoreActionsRow = (node, fallbackParent) => {
+      if (!node) {
+        return;
+      }
+      const placeholder = actionsPlaceholderMap.get(node);
+      if (placeholder?.parentElement) {
+        placeholder.parentElement.insertAdjacentElement('afterend', node);
+      } else if (fallbackParent) {
+        fallbackParent.appendChild(node);
+      }
+      if (placeholder) {
+        placeholder.remove();
+        actionsPlaceholderMap.delete(node);
+      }
+      node.classList.remove(`${PANEL_CLASS}__actions-row`);
+    };
+
+    const getPanelRefs = () => {
+      const host = resolvePanelHost();
+      if (!host) {
+        panelRefs = null;
+        return null;
+      }
+      host.classList.add(USER_TAB_HOST_CLASS);
+      const renderPanelSkeleton = (target) => {
+        target.innerHTML = `
+          <div class="${PANEL_CLASS}__shell">
+            <div class="${PANEL_CLASS}__identity"></div>
+            <div class="${PANEL_CLASS}__content">
+              <div class="${PANEL_CLASS}__stack" role="status" aria-live="polite">
+                <div class="${PANEL_CLASS}__heading-row">
+                  <div class="${PANEL_CLASS}__heading">
+                    <div>
+                      <div class="${PANEL_CLASS}__header">Total Points</div>
+                      <div class="${PANEL_CLASS}__week"></div>
+                    </div>
+                  </div>
+                  <div class="${TEAM_TOTALS_ERROR_CLASS}" aria-live="assertive">
+                    <span class="${TEAM_TOTALS_ERROR_TEXT_CLASS}"></span>
+                  </div>
+                </div>
+                <div class="${PANEL_CLASS}__body">
+                  <div class="${PANEL_CLASS}__stats"></div>
+                  <div class="${PANEL_CLASS}__actions" aria-label="Sleeper actions"></div>
+                </div>
+                <div class="${PANEL_CLASS}__meta"></div>
+              </div>
+            </div>
+          </div>
+          <div class="${PANEL_CLASS}__spinner" aria-hidden="true"></div>
+        `;
+      };
+
+      let panel = document.getElementById(PANEL_ID);
+      if (!panel) {
+        panel = document.createElement('div');
+        panel.id = PANEL_ID;
+        panel.className = PANEL_CLASS;
+        renderPanelSkeleton(panel);
+      } else if (!panel.querySelector(`.${PANEL_CLASS}__shell`)) {
+        const existingIdentityRow = panel.querySelector(`.${PANEL_CLASS}__identity-row`);
+        if (existingIdentityRow) {
+          restoreIdentityRow(existingIdentityRow, panel.parentElement || panel);
+        }
+        const existingActionsRow = panel.querySelector(`.${PANEL_CLASS}__actions-row`);
+        if (existingActionsRow) {
+          restoreActionsRow(existingActionsRow, panel.parentElement || panel);
+        }
+        renderPanelSkeleton(panel);
+      }
+      const primaryRow =
+        Array.from(host.children || []).find((child) => child instanceof Element && child.classList.contains('row')) || host;
+      primaryRow.classList.add(USER_TAB_ROW_CLASS);
+      let actionsRow =
+        (panelRefs?.actionsRow && panelRefs.actionsRow.isConnected ? panelRefs.actionsRow : null) ||
+        Array.from(primaryRow.children || []).find(
+          (child) => child instanceof Element && child.classList.contains('actions')
+        );
+      const identityContainer = panel.querySelector(`.${PANEL_CLASS}__identity`);
+      let identityRow = panel.querySelector(`.${PANEL_CLASS}__identity .row`);
+      if (!identityRow) {
+        identityRow = Array.from(primaryRow.children || []).find(
+          (child) =>
+            child instanceof Element &&
+            child !== primaryRow &&
+            child.classList.contains('row') &&
+            !child.classList.contains(USER_TAB_ROW_CLASS)
+        );
+      }
+      if (!panel.isConnected || panel.parentElement !== primaryRow) {
+        if (actionsRow && actionsRow.parentElement === primaryRow) {
+          actionsRow.insertAdjacentElement('beforebegin', panel);
+        } else {
+          primaryRow.appendChild(panel);
+        }
+      }
+      if (identityContainer) {
+        if (identityRow) {
+          identityContainer.classList.remove(`${PANEL_CLASS}__identity--hidden`);
+          identityRow.classList.add(`${PANEL_CLASS}__identity-row`);
+          if (identityRow.parentElement !== identityContainer) {
+            ensureIdentityPlaceholder(identityRow);
+            identityContainer.innerHTML = '';
+            identityContainer.appendChild(identityRow);
+          }
+        } else {
+          identityContainer.classList.add(`${PANEL_CLASS}__identity--hidden`);
+          identityContainer.innerHTML = '';
+        }
+      }
+      const actionsContainer = panel.querySelector(`.${PANEL_CLASS}__actions`);
+      if (actionsContainer) {
+        if (actionsRow) {
+          actionsContainer.classList.remove(`${PANEL_CLASS}__actions--hidden`);
+          actionsRow.classList.add(`${PANEL_CLASS}__actions-row`);
+          ensureActionsPlaceholder(actionsRow);
+          if (actionsRow.parentElement !== actionsContainer) {
+            actionsContainer.innerHTML = '';
+            actionsContainer.appendChild(actionsRow);
+          }
+        } else {
+          actionsContainer.classList.add(`${PANEL_CLASS}__actions--hidden`);
+          actionsContainer.innerHTML = '';
+        }
+      }
+      if (typeof injectSettingsButton === 'function') {
+        window.requestAnimationFrame(() => injectSettingsButton());
+      }
+      if (!panelRefs || panelRefs.panel !== panel) {
+        panelRefs = {
+          host,
+          row: primaryRow,
+          panel,
+          week: panel.querySelector(`.${PANEL_CLASS}__week`),
+          identity: identityContainer,
+          identityRow,
+          actions: actionsContainer,
+          actionsRow,
+          body: panel.querySelector(`.${PANEL_CLASS}__body`),
+          stats: panel.querySelector(`.${PANEL_CLASS}__stats`),
+          footer: panel.querySelector(`.${PANEL_CLASS}__meta`),
+          errorContainer: panel.querySelector(`.${TEAM_TOTALS_ERROR_CLASS}`),
+          error: panel.querySelector(`.${TEAM_TOTALS_ERROR_TEXT_CLASS}`),
+          spinner: panel.querySelector(`.${PANEL_CLASS}__spinner`),
+        };
+      } else {
+        panelRefs.host = host;
+        panelRefs.row = primaryRow;
+        panelRefs.spinner = panel.querySelector(`.${PANEL_CLASS}__spinner`);
+        panelRefs.identity = identityContainer;
+        panelRefs.identityRow = identityRow;
+        panelRefs.actions = actionsContainer;
+        panelRefs.actionsRow = actionsRow;
+        panelRefs.stats = panel.querySelector(`.${PANEL_CLASS}__stats`);
+        panelRefs.week = panel.querySelector(`.${PANEL_CLASS}__week`);
+        panelRefs.body = panel.querySelector(`.${PANEL_CLASS}__body`);
+        panelRefs.footer = panel.querySelector(`.${PANEL_CLASS}__meta`);
+        panelRefs.errorContainer = panel.querySelector(`.${TEAM_TOTALS_ERROR_CLASS}`);
+        panelRefs.error = panel.querySelector(`.${TEAM_TOTALS_ERROR_TEXT_CLASS}`);
+      }
+      return panelRefs;
+    };
+
+    const removePanel = () => {
+      if (panelRefs?.identityRow) {
+        restoreIdentityRow(panelRefs.identityRow, panelRefs.row || panelRefs.host || null);
+      }
+      if (panelRefs?.actionsRow) {
+        restoreActionsRow(panelRefs.actionsRow, panelRefs.row || panelRefs.host || null);
+      }
+      if (panelRefs?.panel) {
+        panelRefs.panel.remove();
+      }
+      if (panelRefs?.row) {
+        panelRefs.row.classList.remove(USER_TAB_ROW_CLASS);
+      }
+      if (panelRefs?.host) {
+        panelRefs.host.classList.remove(USER_TAB_HOST_CLASS);
+      }
+      panelRefs = null;
+      if (typeof injectSettingsButton === 'function') {
+        window.requestAnimationFrame(() => injectSettingsButton());
+      }
+    };
+
+    const setPanelHidden = (hidden) => {
+      const refs = getPanelRefs();
+      if (!refs) {
+        return;
+      }
+      refs.panel.classList.toggle(PANEL_HIDDEN_CLASS, Boolean(hidden));
+    };
+
+    const setPanelLoading = (loading) => {
+      const refs = getPanelRefs();
+      if (!refs) {
+        return;
+      }
+      refs.panel.classList.toggle(PANEL_LOADING_CLASS, Boolean(loading));
+    };
+
+    const formatPoints = (value) => {
+      if (!Number.isFinite(value)) {
+        return '—';
+      }
+      return Number(value).toFixed(2);
+    };
+
+    const buildRow = (labelText, value, variant) => {
+      const row = document.createElement('div');
+      row.className = `${PANEL_CLASS}__row`;
+      if (variant) {
+        row.dataset.variant = variant;
+      }
+
+      const label = document.createElement('span');
+      label.className = `${PANEL_CLASS}__label`;
+      label.textContent = labelText;
+      row.appendChild(label);
+
+      const ours = document.createElement('span');
+      ours.className = `${PANEL_CLASS}__value`;
+      ours.textContent = formatPoints(value);
+      row.appendChild(ours);
+
+      return row;
+    };
+
+    const renderPlaceholder = (message) => {
+      const refs = getPanelRefs();
+      if (!refs) {
+        return;
+      }
+      if (refs.stats) {
+        refs.stats.innerHTML = '';
+        if (message) {
+          const placeholder = document.createElement('div');
+          placeholder.className = `${PANEL_CLASS}__placeholder`;
+          placeholder.textContent = message;
+          refs.stats.appendChild(placeholder);
+        }
+      }
+      if (refs.footer) {
+        refs.footer.textContent = '';
+      }
+      if (refs.error) {
+        refs.error.textContent = message || '';
+      }
+    };
+
+    const renderTotals = (payload, context) => {
+      const refs = getPanelRefs();
+      if (!refs) {
+        return;
+      }
+      setPanelHidden(false);
+      if (refs.error) {
+        refs.error.textContent = '';
+      }
+      const displayWeek = Number.isFinite(payload?.week) ? payload.week : context.week;
+      if (refs.week) {
+        refs.week.textContent = displayWeek ? `Week ${displayWeek}` : 'This Week';
+      }
+      const hasTotals = payload?.team && (payload.team.actual !== null || payload.team.projected !== null);
+      if (refs.stats) {
+        refs.stats.innerHTML = '';
+        if (hasTotals) {
+          refs.stats.appendChild(buildRow('Actual', payload.team.actual, 'actual'));
+          refs.stats.appendChild(buildRow('Projected', payload.team.projected, 'projected'));
+        } else {
+          const placeholder = document.createElement('div');
+          placeholder.className = `${PANEL_CLASS}__placeholder`;
+          placeholder.textContent = 'Totals unavailable for this roster.';
+          refs.stats.appendChild(placeholder);
+        }
+      }
+      if (refs.footer) {
+        const starterCount = payload?.team?.starterCount ?? context.playerIds.length;
+        const timestamp = payload?.generatedAt
+          ? new Date(payload.generatedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+          : 'just now';
+        refs.footer.textContent = `${starterCount || 0} starters · Synced ${timestamp}`;
+      }
+      if (!hasTotals && payload?.error) {
+        renderError(payload.error);
+      }
+    };
+
+    const renderError = (message) => {
+      const refs = getPanelRefs();
+      if (!refs) {
+        return;
+      }
+      if (refs.stats) {
+        refs.stats.innerHTML = '';
+      }
+      if (refs.footer) {
+        refs.footer.textContent = '';
+      }
+      if (refs.error) {
+        refs.error.textContent = message || 'Sleeper+ totals unavailable';
+      }
+    };
+
+    const extractPlayerId = (item) => {
+      if (!item) {
+        return '';
+      }
+      const datasetId = item.dataset?.sleeperPlusPlayerId;
+      if (datasetId) {
+        return datasetId;
+      }
+      const avatar = item.querySelector('.avatar-player[aria-label]');
+      const ariaLabel = avatar?.getAttribute('aria-label') || '';
+      const match = ariaLabel.match(/player\s+(\d+)/i);
+      if (match && match[1]) {
+        return match[1];
+      }
+      const reserve = item.querySelector('[data-player-id]');
+      const playerId = reserve?.getAttribute?.('data-player-id');
+      return playerId || '';
+    };
+
+    const isBenchSlot = (item) => {
+      const slot = item?.querySelector?.('.league-slot-position-square');
+      if (!slot) {
+        return false;
+      }
+      const classTokens = Array.from(slot.classList || []).map((token) => token.toLowerCase());
+      if (classTokens.some((token) => BENCH_SLOT_TOKENS.includes(token))) {
+        return true;
+      }
+      const text = slot.textContent?.replace(/\s+/g, '').toLowerCase() || '';
+      if (!text) {
+        return false;
+      }
+      return BENCH_SLOT_TOKENS.some((token) => text.includes(token));
+    };
+
+    const collectStarterIds = () => {
+      const roster = document.querySelector('.team-roster');
+      if (!roster) {
+        return [];
+      }
+      const starters = [];
+      const seen = new Set();
+      let benchMode = false;
+      const children = Array.from(roster.children || []);
+      children.forEach((node) => {
+        if (!(node instanceof Element)) {
+          return;
+        }
+        if (node.classList.contains('title-row')) {
+          const titleText = node.querySelector('.title')?.textContent?.trim().toLowerCase() || '';
+          if (titleText && BENCH_HEADER_KEYWORDS.some((keyword) => titleText.includes(keyword))) {
+            benchMode = true;
+          }
+          return;
+        }
+        if (!node.classList.contains('team-roster-item')) {
+          return;
+        }
+        if (benchMode || isBenchSlot(node)) {
+          return;
+        }
+        const playerId = extractPlayerId(node);
+        if (playerId && !seen.has(playerId)) {
+          seen.add(playerId);
+          starters.push(playerId);
+        }
+      });
+      return starters;
+    };
+
+    const buildRequestContext = () => {
+      if (!leagueId) {
+        return null;
+      }
+      const starters = collectStarterIds();
+      const resolvedWeek = Number.isFinite(currentWeek) ? currentWeek : detectDisplayedWeekNumber();
+      const normalizedWeek = Number.isFinite(resolvedWeek) ? Number(resolvedWeek) : undefined;
+      const starterKey = starters.slice().sort().join(',');
+      return {
+        leagueId,
+        rosterId,
+        week: normalizedWeek,
+        playerIds: starters,
+        signature: `${leagueId}:${rosterId}:${normalizedWeek || 'auto'}:${starterKey}`,
+      };
+    };
+
+    const scheduleRefresh = ({ force = false } = {}) => {
+      if (!running) {
+        return;
+      }
+      pendingForceRefresh = pendingForceRefresh || force;
+      if (refreshScheduled) {
+        return;
+      }
+      refreshScheduled = true;
+      window.requestAnimationFrame(() => {
+        refreshScheduled = false;
+        const shouldForce = pendingForceRefresh;
+        pendingForceRefresh = false;
+        runTotalsRefresh({ force: shouldForce });
+      });
+    };
+
+    const runTotalsRefresh = ({ force = false } = {}) => {
+      if (!running || !leagueId) {
+        return;
+      }
+      const context = buildRequestContext();
+      if (!context) {
+        renderPlaceholder('Open your roster to view totals');
+        return;
+      }
+      if (context.playerIds.length === 0) {
+        renderPlaceholder('Set starters to view totals');
+        return;
+      }
+      if (!force && context.signature === lastContextSignature) {
+        return;
+      }
+      lastContextSignature = context.signature;
+      const requestId = ++inflightRequestId;
+      setPanelHidden(false);
+      setPanelLoading(true);
+      renderPlaceholder('');
+
+      sendRuntimeMessage(
+        {
+          type: 'SLEEPER_PLUS_GET_TEAM_TOTALS',
+          leagueId: context.leagueId,
+          rosterId: context.rosterId,
+          week: context.week,
+          playerIds: context.playerIds,
+        },
+        'team totals'
+      )
+        .then((result) => {
+          if (requestId !== inflightRequestId) {
+            return;
+          }
+          if (!rosterId && result?.team?.rosterId) {
+            rosterId = String(result.team.rosterId);
+          }
+          renderTotals(result, context);
+        })
+        .catch((error) => {
+          if (requestId !== inflightRequestId) {
+            return;
+          }
+          renderError(error.message || 'Sleeper+ totals unavailable');
+        })
+        .finally(() => {
+          if (requestId === inflightRequestId) {
+            setPanelLoading(false);
+          }
+        });
+    };
+
+    const handleRosterMutations = (mutations) => {
+      const shouldRefresh = mutations.some((mutation) => {
+        if (mutation.type !== 'childList') {
+          return false;
+        }
+        return (
+          Array.from(mutation.addedNodes || []).some((node) => node instanceof Element && node.classList.contains('team-roster-item')) ||
+          Array.from(mutation.removedNodes || []).some((node) => node instanceof Element && node.classList.contains('team-roster-item'))
+        );
+      });
+      if (shouldRefresh) {
+        scheduleRefresh();
+      }
+    };
+
+    const handleLineupInteraction = (event) => {
+      if (!running) {
+        return;
+      }
+      const target = event?.target instanceof Element ? event.target.closest('.team-roster') : null;
+      if (!target) {
+        return;
+      }
+      window.setTimeout(() => scheduleRefresh(), 200);
+    };
+
+    const attachInteractionListeners = () => {
+      if (interactionListenerAttached) {
+        return;
+      }
+      LINEUP_INTERACTION_EVENTS.forEach((eventName) => {
+        document.addEventListener(eventName, handleLineupInteraction, true);
+      });
+      interactionListenerAttached = true;
+    };
+
+    const detachInteractionListeners = () => {
+      if (!interactionListenerAttached) {
+        return;
+      }
+      LINEUP_INTERACTION_EVENTS.forEach((eventName) => {
+        document.removeEventListener(eventName, handleLineupInteraction, true);
+      });
+      interactionListenerAttached = false;
+    };
+
+    const disconnectRosterObserver = () => {
+      if (rosterObserver) {
+        rosterObserver.disconnect();
+        rosterObserver = null;
+      }
+      observedRoster = null;
+    };
+
+    const connectRosterObserver = (target) => {
+      if (!target || observedRoster === target) {
+        return false;
+      }
+      disconnectRosterObserver();
+      rosterObserver = new MutationObserver((mutations) => {
+        if (!running) {
+          return;
+        }
+        handleRosterMutations(mutations);
+      });
+      rosterObserver.observe(target, { childList: true, subtree: true });
+      observedRoster = target;
+      return true;
+    };
+
+    const watchRosterTarget = () => {
+      if (!running) {
+        return;
+      }
+      const roster = document.querySelector('.team-roster');
+      if (!roster) {
+        disconnectRosterObserver();
+        setPanelHidden(true);
+        lastContextSignature = '';
+        return;
+      }
+      if (connectRosterObserver(roster)) {
+        scheduleRefresh({ force: true });
+      }
+    };
+
+    const startRosterWatch = () => {
+      if (rosterWatchInterval) {
+        return;
+      }
+      watchRosterTarget();
+      rosterWatchInterval = window.setInterval(() => watchRosterTarget(), 1500);
+    };
+
+    const stopRosterWatch = () => {
+      if (rosterWatchInterval) {
+        window.clearInterval(rosterWatchInterval);
+        rosterWatchInterval = null;
+      }
+      disconnectRosterObserver();
+    };
+
+    const handleVisibilityChange = () => {
+      if (!running) {
+        return;
+      }
+      if (document.visibilityState === 'hidden') {
+        stopRosterWatch();
+        stopWeekWatcher();
+      } else {
+        startRosterWatch();
+        startWeekWatcher();
+        scheduleRefresh();
+      }
+    };
+
+    const attachVisibilityListener = () => {
+      if (visibilityListenerAttached) {
+        return;
+      }
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+      visibilityListenerAttached = true;
+    };
+
+    const detachVisibilityListener = () => {
+      if (!visibilityListenerAttached) {
+        return;
+      }
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      visibilityListenerAttached = false;
+    };
+
+    const start = () => {
+      if (running) {
+        scheduleRefresh();
+        return;
+      }
+      running = true;
+      lastContextSignature = '';
+      inflightRequestId += 1;
+      getPanelRefs();
+      setPanelHidden(false);
+      startRosterWatch();
+      startWeekWatcher();
+      attachVisibilityListener();
+      attachInteractionListeners();
+      scheduleRefresh();
+    };
+
+    const stop = () => {
+      if (!running) {
+        detachInteractionListeners();
+        removePanel();
+        return;
+      }
+      running = false;
+      lastContextSignature = '';
+      inflightRequestId += 1;
+      stopRosterWatch();
+      stopWeekWatcher();
+      detachVisibilityListener();
+      detachInteractionListeners();
+      removePanel();
+    };
+
+    const update = ({ enabled, leagueId: nextLeagueId, rosterId: nextRosterId }) => {
+      leagueId = nextLeagueId || '';
+      rosterId = nextRosterId || '';
+      if (leagueId) {
+        syncWeekFromService();
+      }
+      if (enabled && leagueId) {
+        start();
+      } else {
+        stop();
+      }
+    };
+
+    const refresh = () => {
+      if (running) {
+        scheduleRefresh();
+      }
+    };
+
+    return { update, refresh, stop };
+  })();
+
+  const detachHeaderSettingsParent = () => {
+    if (headerSettingsParent) {
+      headerSettingsParent.classList.remove(SETTINGS_PARENT_CLASS);
+      headerSettingsParent = null;
+    }
+  };
+
+  const buildSettingsButton = () => {
     const container = document.createElement('div');
     container.id = BUTTON_CONTAINER_ID;
-    container.className = target.className;
-    container.classList.add(ENTRY_CLASS);
+    container.className = `${ENTRY_CLASS} sleeper-plus-settings-entry`;
+    container.dataset.placement = 'header';
 
     const button = document.createElement('button');
     button.type = 'button';
     button.className = BUTTON_CLASS;
-    button.textContent = '+';
     button.title = 'Sleeper+ Settings';
     button.setAttribute('aria-label', 'Open Sleeper+ settings');
-
-    const applyVisualStylesFrom = (element) => {
-      if (!element) {
-        return false;
-      }
-
-      const computed = window.getComputedStyle(element);
-      if (!computed) {
-        return false;
-      }
-
-      let applied = false;
-
-      if (computed.borderRadius && parseFloat(computed.borderRadius)) {
-        button.style.borderRadius = computed.borderRadius;
-        container.style.borderRadius = computed.borderRadius;
-        applied = true;
-      }
-
-      if (computed.padding) {
-        button.style.padding = computed.padding;
-        applied = true;
-      }
-
-      if (computed.minHeight && computed.minHeight !== '0px') {
-        button.style.minHeight = computed.minHeight;
-        applied = true;
-      }
-
-      if (computed.minWidth && computed.minWidth !== '0px') {
-        button.style.minWidth = computed.minWidth;
-        applied = true;
-      }
-
-      if (computed.color) {
-        button.style.color = computed.color;
-        applied = true;
-      }
-
-      return applied;
-    };
-
-    const referenceButton =
-      (target.matches('button, [role="button"]') && target) ||
-      target.querySelector('button, [role="button"]');
-    if (referenceButton) {
-      referenceButton.classList.forEach((className) => {
-        if (!button.classList.contains(className)) {
-          button.classList.add(className);
-        }
-      });
-      const copiedFromReference = applyVisualStylesFrom(referenceButton);
-      if (!copiedFromReference) {
-        applyVisualStylesFrom(target);
-      }
-    } else {
-      applyVisualStylesFrom(target);
-    }
+    button.innerHTML = `
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path
+          d="M12 5a1 1 0 0 1 1 1v5h5a1 1 0 1 1 0 2h-5v5a1 1 0 1 1-2 0v-5H6a1 1 0 1 1 0-2h5V6a1 1 0 0 1 1-1z"
+          fill="currentColor"
+        />
+      </svg>`;
 
     button.addEventListener('click', (event) => {
       event.preventDefault();
-      openOptions();
+      openSleeperPlusSettings();
     });
 
-    container.appendChild(button);
-    parent.insertBefore(container, target);
+    const buttonWrapper = document.createElement('div');
+    buttonWrapper.className = 'sleeper-plus-settings-button-shell';
+    buttonWrapper.appendChild(button);
+
+    const label = document.createElement('div');
+    label.className = 'btn-text sleeper-plus-settings-label';
+    label.textContent = 'Sleeper+';
+
+    container.appendChild(buttonWrapper);
+    container.appendChild(label);
+    return container;
+  };
+
+  const resolveSettingsButtonTarget = () => {
+    const actionsRow = document.querySelector('.sleeper-plus-team-totals__actions-row');
+    if (actionsRow) {
+      return { placement: 'actions', parent: actionsRow };
+    }
+    const headerAnchor = document.querySelector('.settings-header-container');
+    if (headerAnchor && headerAnchor.parentElement) {
+      return { placement: 'header', parent: headerAnchor.parentElement, reference: headerAnchor };
+    }
+    return null;
+  };
+
+  const injectSettingsButton = () => {
+    if (!shouldDisplaySettingsButton()) {
+      detachHeaderSettingsParent();
+      return false;
+    }
+
+    const target = resolveSettingsButtonTarget();
+    if (!target) {
+      return false;
+    }
+
+    let container = document.getElementById(BUTTON_CONTAINER_ID);
+    if (!container) {
+      container = buildSettingsButton();
+    }
+
+    container.dataset.placement = target.placement;
+
+    if (target.placement === 'actions') {
+      detachHeaderSettingsParent();
+      container.classList.add('action', 'btn-container', 'space');
+      if (container.parentElement !== target.parent || container !== target.parent.lastElementChild) {
+        target.parent.appendChild(container);
+      }
+    } else {
+      container.classList.remove('action', 'btn-container', 'space');
+      if (headerSettingsParent !== target.parent) {
+        detachHeaderSettingsParent();
+        headerSettingsParent = target.parent;
+        headerSettingsParent.classList.add(SETTINGS_PARENT_CLASS);
+      }
+      if (container.parentElement !== target.parent || container.nextElementSibling !== target.reference) {
+        target.parent.insertBefore(container, target.reference);
+      }
+    }
 
     return true;
   };
 
   const removeSettingsButton = () => {
     const existing = document.getElementById(BUTTON_CONTAINER_ID);
-    if (!existing) {
-      return;
+    if (existing) {
+      existing.remove();
+      refreshIndicatorController.remove();
     }
-
-    const parent = existing.parentElement;
-    existing.remove();
-    refreshIndicatorController.remove();
-
-    if (parent && parent.classList.contains(SETTINGS_PARENT_CLASS)) {
-      const remaining = parent.querySelector(`#${BUTTON_CONTAINER_ID}`);
-      if (!remaining) {
-        parent.classList.remove(SETTINGS_PARENT_CLASS);
-      }
-    }
+    detachHeaderSettingsParent();
   };
 
   const startSettingsObserver = () => {
@@ -2441,10 +3944,7 @@
       if (!shouldDisplaySettingsButton()) {
         return;
       }
-
-      if (!document.getElementById(BUTTON_CONTAINER_ID)) {
-        injectSettingsButton();
-      }
+      injectSettingsButton();
     });
 
     settingsObserver.observe(document.body, SETTINGS_OBSERVER_CONFIG);
@@ -2533,6 +4033,17 @@
     if (shouldRunTrends) {
       trendOverlayManager.refresh();
     }
+
+    const activeRosterId = getCurrentRosterId();
+    const shouldRunTotals = isActive && isTeamView() && Boolean(activeLeagueId) && showTeamTotals;
+    teamTotalsController.update({
+      enabled: shouldRunTotals,
+      leagueId: shouldRunTotals ? activeLeagueId : '',
+      rosterId: shouldRunTotals ? activeRosterId : '',
+    });
+    if (shouldRunTotals) {
+      teamTotalsController.refresh();
+    }
   };
 
   const handleUrlChange = () => {
@@ -2573,6 +4084,7 @@
     enableTrendOverlays = stored.enableTrendOverlays;
     showOpponentRanks = stored.showOpponentRanks;
     showSparklineAlways = stored.showSparklineAlways;
+    showTeamTotals = stored.showTeamTotals;
 
     evaluateActivation();
     currentBaseUrl = window.location.href;
@@ -2664,6 +4176,18 @@
       if (showSparklineAlways !== nextShowSparklineAlways) {
         showSparklineAlways = nextShowSparklineAlways;
         trendOverlayManager.refresh();
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(changes, 'showTeamTotals')) {
+      const nextShowTeamTotals =
+        typeof changes.showTeamTotals.newValue === 'boolean'
+          ? changes.showTeamTotals.newValue
+          : DEFAULT_SHOW_TEAM_TOTALS;
+
+      if (showTeamTotals !== nextShowTeamTotals) {
+        showTeamTotals = nextShowTeamTotals;
+        shouldEvaluate = true;
       }
     }
 

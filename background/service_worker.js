@@ -14,6 +14,12 @@ const PLAYER_SNAPSHOT_ALARM = 'sleeperPlus:refreshPlayers';
 const LEAGUE_SNAPSHOT_ALARM = 'sleeperPlus:refreshLeagueStats';
 const PLAYER_DATA_TTL_MS = ONE_DAY_MS;
 const LEAGUE_DATA_TTL_MS = 3 * ONE_HOUR_MS;
+const MATCHUP_CACHE_TTL_MS = 30 * 1000;
+const STATE_CACHE_TTL_MS = 60 * 1000;
+
+const matchupCache = new Map();
+let stateCacheEnvelope = null;
+let inflightStateRequest = null;
 
 const asyncChrome = {
   storageLocalGet(keys) {
@@ -98,6 +104,29 @@ const fetchProjectionJson = async (path, init = {}) => {
   return response.json();
 };
 
+const fetchNflState = async ({ force = false } = {}) => {
+  const hasFreshCache =
+    !force && stateCacheEnvelope && Date.now() - stateCacheEnvelope.timestamp < STATE_CACHE_TTL_MS;
+  if (hasFreshCache) {
+    return stateCacheEnvelope.payload;
+  }
+  if (!force && inflightStateRequest) {
+    return inflightStateRequest;
+  }
+  const request = fetchJson('/state/nfl')
+    .then((payload) => {
+      stateCacheEnvelope = { payload, timestamp: Date.now() };
+      inflightStateRequest = null;
+      return payload;
+    })
+    .catch((error) => {
+      inflightStateRequest = null;
+      throw error;
+    });
+  inflightStateRequest = request;
+  return request;
+};
+
 const normalizeLeagueId = (value) => {
   if (typeof value !== 'string') {
     return '';
@@ -125,6 +154,81 @@ const sanitizeLeagueIdList = (input) => {
       }
     });
   return collected;
+};
+
+const sanitizeRosterId = (value) => {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  return String(value).trim();
+};
+
+const sanitizePlayerIdList = (input) => {
+  if (!input && input !== 0) {
+    return [];
+  }
+  const list = Array.isArray(input) ? input : [input];
+  const collected = [];
+  const seen = new Set();
+  list
+    .map((value) => (value === null || value === undefined ? '' : String(value).trim()))
+    .filter(Boolean)
+    .forEach((playerId) => {
+      if (seen.has(playerId)) {
+        return;
+      }
+      seen.add(playerId);
+      collected.push(playerId);
+    });
+  return collected;
+};
+
+const areStarterListsEqual = (listA, listB) => {
+  if (!Array.isArray(listA) || !Array.isArray(listB) || listA.length !== listB.length) {
+    return false;
+  }
+  const sortedA = sanitizePlayerIdList(listA).sort();
+  const sortedB = sanitizePlayerIdList(listB).sort();
+  if (sortedA.length !== sortedB.length) {
+    return false;
+  }
+  for (let index = 0; index < sortedA.length; index += 1) {
+    if (sortedA[index] !== sortedB[index]) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const findBestMatchupByPlayerIds = (matchups, playerIds) => {
+  if (!Array.isArray(matchups) || matchups.length === 0 || playerIds.length === 0) {
+    return null;
+  }
+  const sanitizedPlayers = sanitizePlayerIdList(playerIds);
+  if (sanitizedPlayers.length === 0) {
+    return null;
+  }
+  const playerSet = new Set(sanitizedPlayers);
+  let bestMatch = null;
+  let bestScore = 0;
+  for (let index = 0; index < matchups.length; index += 1) {
+    const entry = matchups[index];
+    const entryPlayers = sanitizePlayerIdList(entry?.starters || []);
+    if (entryPlayers.length === 0) {
+      continue;
+    }
+    let score = 0;
+    for (let playerIndex = 0; playerIndex < entryPlayers.length; playerIndex += 1) {
+      if (playerSet.has(entryPlayers[playerIndex])) {
+        score += 1;
+      }
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestMatch = entry;
+    }
+  }
+  return bestScore > 0 ? bestMatch : null;
 };
 
 const getTrackedLeagueIds = () =>
@@ -199,6 +303,101 @@ const derivePrimaryPosition = (record) => {
   );
 };
 
+const TEAM_CODE_ALIASES = {
+  JAC: 'JAX',
+  WSH: 'WAS',
+};
+
+const OPPONENT_OBJECT_FIELDS = [
+  'abbr',
+  'abbreviation',
+  'alias',
+  'team',
+  'team_abbr',
+  'team_abbreviation',
+  'teamAlias',
+  'teamAliasAbbr',
+  'short_name',
+  'shortName',
+  'display_name',
+  'displayName',
+  'name',
+  'code',
+  'opponent',
+  'opponent_abbr',
+  'opponentAbbr',
+];
+
+const normalizeOpponentCode = (value) => {
+  if (value === undefined || value === null) {
+    return '';
+  }
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      const normalized = normalizeOpponentCode(value[index]);
+      if (normalized) {
+        return normalized;
+      }
+    }
+    return '';
+  }
+  if (typeof value === 'object') {
+    for (let index = 0; index < OPPONENT_OBJECT_FIELDS.length; index += 1) {
+      const field = OPPONENT_OBJECT_FIELDS[index];
+      if (Object.prototype.hasOwnProperty.call(value, field)) {
+        const normalized = normalizeOpponentCode(value[field]);
+        if (normalized) {
+          return normalized;
+        }
+      }
+    }
+    return '';
+  }
+  const normalized = value.toString().toUpperCase().replace(/[^A-Z]/g, '');
+  if (!normalized || normalized === 'BYE') {
+    return '';
+  }
+  return TEAM_CODE_ALIASES[normalized] || normalized;
+};
+
+const resolveNormalizedOpponent = (...candidates) => {
+  for (let index = 0; index < candidates.length; index += 1) {
+    const normalized = normalizeOpponentCode(candidates[index]);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return '';
+};
+
+const buildOpponentRankMap = (totalsByPosition = {}, countsByPosition = {}) => {
+  const ranks = {};
+  Object.entries(totalsByPosition).forEach(([position, teamTotals]) => {
+    const entriesForPosition = Object.entries(teamTotals)
+      .map(([team, total]) => ({
+        team,
+        total,
+        count: countsByPosition?.[position]?.[team] || 0,
+      }))
+      .sort((a, b) => b.total - a.total);
+    if (entriesForPosition.length === 0) {
+      return;
+    }
+    const scale = entriesForPosition.length;
+    ranks[position] = {};
+    entriesForPosition.forEach((entry, index) => {
+      const teamCode = entry.team.toUpperCase();
+      ranks[position][teamCode] = {
+        rank: index + 1,
+        total: Number(entry.total.toFixed(2)),
+        count: entry.count,
+        scale,
+      };
+    });
+  });
+  return ranks;
+};
+
 const DEFAULT_SCORING_WEIGHTS = {
   pass_yd: 0.04,
   pass_td: 4,
@@ -224,7 +423,7 @@ const buildScoringWeights = (scoringSettings) => {
   return { ...DEFAULT_SCORING_WEIGHTS, ...scoringSettings };
 };
 
-const calculateProjectedPoints = (stats, scoringWeights) => {
+const calculateFantasyPoints = (stats, scoringWeights) => {
   if (!stats || typeof stats !== 'object') {
     return null;
   }
@@ -260,12 +459,35 @@ const normalizeProjectionMap = (payload, scoringSettings) => {
     if (!playerId || !stats || typeof stats !== 'object') {
       return;
     }
-    const projectedPoints = calculateProjectedPoints(stats, scoringWeights);
+    const resolvedOpponent = resolveNormalizedOpponent(
+      metadata.opponent,
+      metadata.opponent_team,
+      stats.opponent,
+      stats.opp,
+      stats.opponent_team,
+      stats.opponentTeam,
+      stats.opponent_abbr,
+      stats.schedule?.opponent,
+      stats.schedule?.opponent_team,
+      stats.schedule,
+      stats.team?.opponent,
+      stats.team?.opponent_team,
+      stats.team,
+      stats.team_opponent,
+      stats.matchup?.opponent,
+      stats.matchup?.opponent_team,
+      stats.matchup,
+      stats.meta?.opponent
+    );
+    const assignOpponent = () => {
+      if (resolvedOpponent) {
+        opponents[playerId] = resolvedOpponent;
+      }
+    };
+    const projectedPoints = calculateFantasyPoints(stats, scoringWeights);
     const applyPoints = (value) => {
       projections[playerId] = Number(value.toFixed(2));
-      if (metadata.opponent) {
-        opponents[playerId] = metadata.opponent;
-      }
+      assignOpponent();
     };
 
     if (projectedPoints !== null) {
@@ -279,9 +501,7 @@ const normalizeProjectionMap = (payload, scoringSettings) => {
         return;
       }
     }
-    if (metadata.opponent) {
-      opponents[playerId] = metadata.opponent;
-    }
+    assignOpponent();
   };
 
   if (Array.isArray(payload)) {
@@ -297,6 +517,79 @@ const normalizeProjectionMap = (payload, scoringSettings) => {
   }
 
   return { projections, opponents };
+};
+
+const normalizeStatsMap = (payload, scoringSettings) => {
+  if (!payload || typeof payload !== 'object') {
+    return { actuals: {}, opponents: {} };
+  }
+  const scoringWeights = buildScoringWeights(scoringSettings);
+  const actuals = {};
+  const opponents = {};
+  const fallbackPointFields = ['pts_ppr', 'pts_half_ppr', 'pts_std'];
+
+  const applyEntry = (playerId, stats, metadata = {}) => {
+    if (!playerId || !stats || typeof stats !== 'object') {
+      return;
+    }
+    const resolvedOpponent = resolveNormalizedOpponent(
+      metadata.opponent,
+      metadata.opponent_team,
+      stats.opponent,
+      stats.opp,
+      stats.opponent_team,
+      stats.opponentTeam,
+      stats.opponent_abbr,
+      stats.schedule?.opponent,
+      stats.schedule?.opponent_team,
+      stats.schedule,
+      stats.team?.opponent,
+      stats.team?.opponent_team,
+      stats.team,
+      stats.team_opponent,
+      stats.matchup?.opponent,
+      stats.matchup?.opponent_team,
+      stats.matchup,
+      stats.meta?.opponent
+    );
+    const assignOpponent = () => {
+      if (resolvedOpponent) {
+        opponents[playerId] = resolvedOpponent;
+      }
+    };
+    const fantasyPoints = calculateFantasyPoints(stats, scoringWeights);
+    const applyPoints = (value) => {
+      actuals[playerId] = Number(value.toFixed(2));
+      assignOpponent();
+    };
+
+    if (fantasyPoints !== null) {
+      applyPoints(fantasyPoints);
+      return;
+    }
+    for (const field of fallbackPointFields) {
+      const fallbackValue = Number(stats[field]);
+      if (Number.isFinite(fallbackValue)) {
+        applyPoints(fallbackValue);
+        return;
+      }
+    }
+    assignOpponent();
+  };
+
+  if (Array.isArray(payload)) {
+    payload.forEach((entry) => {
+      const playerId = entry?.player_id || entry?.player?.player_id;
+      const opponent = entry?.opponent || entry?.opp || null;
+      applyEntry(playerId, entry?.stats || entry, { opponent });
+    });
+  } else {
+    Object.entries(payload).forEach(([playerId, stats]) => {
+      applyEntry(playerId, stats, {});
+    });
+  }
+
+  return { actuals, opponents };
 };
 
 const fetchWeekProjectionMap = async ({ season, week, seasonType = 'regular', scoringSettings }) => {
@@ -327,6 +620,20 @@ const fetchWeekProjectionMap = async ({ season, week, seasonType = 'regular', sc
   }
 
   return { projections: {}, opponents: {} };
+};
+
+const fetchWeekStatMap = async ({ season, week, seasonType = 'regular', scoringSettings }) => {
+  const path = `/stats/nfl/${seasonType}/${season}/${week}?type=stats`;
+  try {
+    const payload = await fetchJson(path);
+    const result = normalizeStatsMap(payload, scoringSettings);
+    if (Object.keys(result.actuals).length > 0) {
+      return result;
+    }
+  } catch (error) {
+    console.warn('Sleeper+ weekly stats feed failed', { season, week, seasonType, error });
+  }
+  return { actuals: {}, opponents: {} };
 };
 
 const refreshPlayerDirectory = async ({ force = false } = {}) => {
@@ -397,7 +704,8 @@ const buildOpponentPositionRanks = (projectionResult, playerDirectory) => {
   const entries = Object.entries(projectionResult?.projections || {});
   entries.forEach(([playerId, projectedPoints]) => {
     const opponent = projectionResult?.opponents?.[playerId];
-    if (!opponent || !Number.isFinite(projectedPoints)) {
+    const normalizedOpponent = normalizeOpponentCode(opponent);
+    if (!normalizedOpponent || !Number.isFinite(projectedPoints)) {
       return;
     }
     const directoryEntry = playerDirectory[playerId];
@@ -409,38 +717,13 @@ const buildOpponentPositionRanks = (projectionResult, playerDirectory) => {
       totalsByPosition[position] = {};
       countsByPosition[position] = {};
     }
-    const normalizedOpponent = opponent.toUpperCase();
     totalsByPosition[position][normalizedOpponent] =
       (totalsByPosition[position][normalizedOpponent] || 0) + Number(projectedPoints);
     countsByPosition[position][normalizedOpponent] =
       (countsByPosition[position][normalizedOpponent] || 0) + 1;
   });
 
-  const ranks = {};
-  Object.entries(totalsByPosition).forEach(([position, teamTotals]) => {
-    const entriesForPosition = Object.entries(teamTotals)
-      .map(([team, total]) => ({
-        team,
-        total,
-        count: countsByPosition[position][team] || 0,
-      }))
-      .sort((a, b) => b.total - a.total);
-    const scale = entriesForPosition.length || 1;
-    entriesForPosition.forEach((entry, index) => {
-      if (!ranks[position]) {
-        ranks[position] = {};
-      }
-      const teamCode = entry.team.toUpperCase();
-      ranks[position][teamCode] = {
-        rank: index + 1,
-        total: Number(entry.total.toFixed(2)),
-        count: entry.count,
-        scale,
-      };
-    });
-  });
-
-  return ranks;
+  return buildOpponentRankMap(totalsByPosition, countsByPosition);
 };
 
 const ensureWeeklyRecord = (container, playerId) => {
@@ -508,6 +791,24 @@ const fetchLeagueSnapshot = async (leagueId, playerDirectory, sharedState) => {
   const playerWeeklySource = {};
   const playerMatchupsByWeek = {};
   const matchupRanksByWeek = {};
+  const cumulativeOpponentTotals = {};
+  const cumulativeOpponentCounts = {};
+  let hasOpponentAggregateData = false;
+
+  const recordOpponentSample = (position, opponentCode, points) => {
+    if (!Number.isFinite(points)) {
+      return;
+    }
+    if (!cumulativeOpponentTotals[position]) {
+      cumulativeOpponentTotals[position] = {};
+      cumulativeOpponentCounts[position] = {};
+    }
+    cumulativeOpponentTotals[position][opponentCode] =
+      (cumulativeOpponentTotals[position][opponentCode] || 0) + points;
+    cumulativeOpponentCounts[position][opponentCode] =
+      (cumulativeOpponentCounts[position][opponentCode] || 0) + 1;
+    hasOpponentAggregateData = true;
+  };
 
   for (let week = startWeek; week <= seasonEndWeek; week += 1) {
     if (week !== startWeek) {
@@ -518,7 +819,15 @@ const fetchLeagueSnapshot = async (leagueId, playerDirectory, sharedState) => {
     const matchupRequest = shouldFetchActuals
       ? fetchJson(`/league/${leagueId}/matchups/${week}`)
       : Promise.resolve([]);
-    const [matchups, projectionMap] = await Promise.all([
+    const statsRequest = shouldFetchActuals
+      ? fetchWeekStatMap({
+          season: projectionSeason,
+          week,
+          seasonType,
+          scoringSettings: league.scoring_settings,
+        })
+      : Promise.resolve({ actuals: {}, opponents: {} });
+    const [matchups, projectionMap, statsMap] = await Promise.all([
       matchupRequest,
       fetchWeekProjectionMap({
         season: projectionSeason,
@@ -526,6 +835,7 @@ const fetchLeagueSnapshot = async (leagueId, playerDirectory, sharedState) => {
         seasonType,
         scoringSettings: league.scoring_settings,
       }),
+      statsRequest,
     ]);
 
     if (shouldFetchActuals) {
@@ -541,6 +851,40 @@ const fetchLeagueSnapshot = async (leagueId, playerDirectory, sharedState) => {
           record.actual[week] = safePoints + (record.actual[week] || 0);
         });
       });
+      const statsSource = statsMap && Object.keys(statsMap.actuals || {}).length > 0 ? statsMap : null;
+      if (statsSource) {
+        Object.entries(statsSource.actuals).forEach(([playerId, weeklyPoints]) => {
+          const numericPoints = Number(weeklyPoints);
+          if (!Number.isFinite(numericPoints)) {
+            return;
+          }
+          const directoryEntry = playerDirectory[playerId];
+          const opponentCode = normalizeOpponentCode(statsSource.opponents?.[playerId]);
+          if (!directoryEntry || !opponentCode) {
+            return;
+          }
+          const position = derivePrimaryPosition(directoryEntry);
+          recordOpponentSample(position, opponentCode, numericPoints);
+        });
+      } else {
+        matchups.forEach((entry) => {
+          const points = entry.players_points || {};
+          Object.entries(points).forEach(([playerId, weeklyPoints]) => {
+            if (weeklyPoints === undefined || weeklyPoints === null) {
+              return;
+            }
+            const directoryEntry = playerDirectory[playerId];
+            const opponentCode = normalizeOpponentCode(projectionMap.opponents?.[playerId]);
+            if (!directoryEntry || !opponentCode) {
+              return;
+            }
+            const position = derivePrimaryPosition(directoryEntry);
+            const numericPoints = Number(weeklyPoints);
+            const safePoints = Number.isFinite(numericPoints) ? numericPoints : 0;
+            recordOpponentSample(position, opponentCode, safePoints);
+          });
+        });
+      }
     }
 
     trackedPlayerIds.forEach((playerId) => {
@@ -555,13 +899,17 @@ const fetchLeagueSnapshot = async (leagueId, playerDirectory, sharedState) => {
       record.projected[week] = Number(projectionPoints);
     });
 
-    const matchupRanks = buildOpponentPositionRanks(projectionMap, playerDirectory);
+    const matchupRanks = hasOpponentAggregateData
+      ? buildOpponentRankMap(cumulativeOpponentTotals, cumulativeOpponentCounts)
+      : buildOpponentPositionRanks(projectionMap, playerDirectory);
     matchupRanksByWeek[week] = matchupRanks;
 
     const weekMatchups = {};
     trackedPlayerIds.forEach((playerId) => {
-      const opponent = projectionMap.opponents[playerId];
-      if (!opponent) {
+      const opponentRaw =
+        statsMap?.opponents?.[playerId] || projectionMap.opponents?.[playerId] || null;
+      const normalizedOpponent = normalizeOpponentCode(opponentRaw);
+      if (!normalizedOpponent) {
         return;
       }
       const directoryEntry = playerDirectory[playerId];
@@ -569,19 +917,23 @@ const fetchLeagueSnapshot = async (leagueId, playerDirectory, sharedState) => {
         return;
       }
       const position = derivePrimaryPosition(directoryEntry);
-      const normalizedOpponent = opponent.toUpperCase();
       const rankingEntry = matchupRanks[position]?.[normalizedOpponent];
       if (!rankingEntry) {
         return;
       }
+      const opponentLabel = opponentRaw ? opponentRaw.toString().toUpperCase() : normalizedOpponent;
+      const playerProjection = projectionMap.projections?.[playerId];
+      const formattedProjection = Number.isFinite(Number(playerProjection))
+        ? Number(Number(playerProjection).toFixed(2))
+        : null;
       weekMatchups[playerId] = {
-        opponent: normalizedOpponent,
+        opponent: opponentLabel,
         position,
         rank: rankingEntry.rank,
         scale: rankingEntry.scale,
         sampleSize: rankingEntry.count,
         projectedAllowed: rankingEntry.total,
-        playerProjection: Number((projectionMap.projections[playerId] || 0).toFixed(2)),
+        playerProjection: formattedProjection,
       };
     });
     playerMatchupsByWeek[week] = weekMatchups;
@@ -601,6 +953,7 @@ const fetchLeagueSnapshot = async (leagueId, playerDirectory, sharedState) => {
     season: league.season,
     startWeek,
     currentWeek,
+    displayWeek: stateWeek,
     statsWeek,
     seasonEndWeek,
     playerWeekly,
@@ -664,7 +1017,12 @@ const refreshLeagueSnapshots = async ({ force = false, leagueIds } = {}) => {
 
   const playersEnvelope = await refreshPlayerDirectory({ force: false });
   const playerDirectory = playersEnvelope?.payload?.records || {};
-  const state = await fetchJson('/state/nfl');
+  let state = null;
+  try {
+    state = await fetchNflState({ force });
+  } catch (error) {
+    console.warn('Sleeper+ state sync unavailable; using direct snapshot fetch', error);
+  }
 
   const snapshots = { ...payload.byLeague };
   for (const leagueId of ids) {
@@ -712,6 +1070,230 @@ const ensureLeagueSnapshot = async (leagueId) => {
   }
   const refreshed = await refreshLeagueSnapshots({ force: true, leagueIds: [leagueId] });
   return refreshed?.payload?.byLeague?.[leagueId] || null;
+};
+
+const getPlayerWeeklyEntry = (snapshot, playerId, week) => {
+  if (!snapshot || !snapshot.playerWeekly || !playerId || !Number.isFinite(week)) {
+    return null;
+  }
+  const entries = snapshot.playerWeekly[playerId];
+  if (!entries || !Array.isArray(entries)) {
+    return null;
+  }
+  return entries.find((entry) => Number(entry.week) === Number(week)) || null;
+};
+
+const getPlayerWeekStat = (snapshot, playerId, week, stat) => {
+  const entry = getPlayerWeeklyEntry(snapshot, playerId, week);
+  if (!entry) {
+    return null;
+  }
+  if (stat === 'actual') {
+    return entry.hasActual ? Number(entry.points) || 0 : null;
+  }
+  if (stat === 'projected') {
+    return entry.projected !== undefined && entry.projected !== null ? Number(entry.projected) : null;
+  }
+  return null;
+};
+
+const cleanupMatchupCache = () => {
+  const now = Date.now();
+  matchupCache.forEach((entry, key) => {
+    if (!entry || now - entry.timestamp > MATCHUP_CACHE_TTL_MS) {
+      matchupCache.delete(key);
+    }
+  });
+};
+
+const getWeekMatchups = async ({ leagueId, week, force = false }) => {
+  const numericWeek = Number(week);
+  if (!leagueId || !Number.isFinite(numericWeek)) {
+    throw new Error('League and week are required');
+  }
+  const cacheKey = `${leagueId}:${numericWeek}`;
+  if (!force && matchupCache.has(cacheKey)) {
+    const cached = matchupCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < MATCHUP_CACHE_TTL_MS) {
+      return cached.payload;
+    }
+  }
+
+  const payload = await fetchJson(`/league/${leagueId}/matchups/${numericWeek}`);
+  matchupCache.set(cacheKey, { timestamp: Date.now(), payload });
+  cleanupMatchupCache();
+  return payload;
+};
+
+const computeStarterTotals = (matchupEntry, starterIds, { snapshot, week }) => {
+  if (!matchupEntry) {
+    return null;
+  }
+  const starters = sanitizePlayerIdList(
+    starterIds && starterIds.length > 0 ? starterIds : matchupEntry.starters || []
+  );
+  const playerPoints = matchupEntry.players_points || {};
+  const playerProjected = matchupEntry.players_projected || {};
+  let actualTotal = 0;
+  let projectedTotal = 0;
+
+  starters.forEach((playerId) => {
+    const actual = Number(playerPoints[playerId]);
+    if (Number.isFinite(actual)) {
+      actualTotal += actual;
+    } else if (snapshot) {
+      const fallbackActual = getPlayerWeekStat(snapshot, playerId, week, 'actual');
+      if (Number.isFinite(fallbackActual)) {
+        actualTotal += fallbackActual;
+      }
+    }
+
+    const projected = Number(playerProjected[playerId]);
+    if (Number.isFinite(projected)) {
+      projectedTotal += projected;
+    } else if (snapshot) {
+      const fallbackProjected = getPlayerWeekStat(snapshot, playerId, week, 'projected');
+      if (Number.isFinite(fallbackProjected)) {
+        projectedTotal += fallbackProjected;
+      }
+    }
+  });
+
+  const formatTotal = (value) => {
+    if (!Number.isFinite(value)) {
+      return null;
+    }
+    return Number(value.toFixed(2));
+  };
+
+  return {
+    rosterId: matchupEntry.roster_id ?? null,
+    matchupId: matchupEntry.matchup_id ?? null,
+    starterCount: starters.length,
+    starters,
+    actual: formatTotal(actualTotal),
+    projected: formatTotal(projectedTotal),
+  };
+};
+
+const getTeamTotalsPayload = async ({ leagueId, rosterId, week, playerIds }) => {
+  const normalizedLeagueId = normalizeLeagueId(leagueId);
+  const normalizedRosterId = sanitizeRosterId(rosterId);
+  const sanitizedPlayers = sanitizePlayerIdList(playerIds);
+  try {
+    if (!normalizedLeagueId) {
+      throw new Error('League unavailable');
+    }
+
+    const snapshot = await ensureLeagueSnapshot(normalizedLeagueId);
+    if (!snapshot) {
+      throw new Error('League data unavailable');
+    }
+
+    const resolvedWeek = clampWeekWithinSeason(snapshot, week);
+    if (!Number.isFinite(resolvedWeek)) {
+      throw new Error('Week unavailable');
+    }
+
+    const matchups = await getWeekMatchups({ leagueId: normalizedLeagueId, week: resolvedWeek });
+    if (!Array.isArray(matchups) || matchups.length === 0) {
+      throw new Error('Matchups unavailable');
+    }
+
+    let ourEntry = null;
+    if (normalizedRosterId) {
+      ourEntry = matchups.find((entry) => String(entry.roster_id) === normalizedRosterId);
+    }
+    if (!ourEntry && sanitizedPlayers.length > 0) {
+      ourEntry =
+        matchups.find((entry) => areStarterListsEqual(entry?.starters || [], sanitizedPlayers)) ||
+        findBestMatchupByPlayerIds(matchups, sanitizedPlayers);
+      if (!ourEntry && matchups.length > 0) {
+        console.info('Sleeper+ team totals defaulting to first matchup when roster determination failed');
+        ourEntry = matchups[0];
+      }
+    }
+    if (!ourEntry) {
+      console.warn('Sleeper+ team totals could not match roster; falling back to first available matchup');
+      ourEntry = matchups[0];
+    }
+
+    const starters = sanitizedPlayers.length > 0 ? sanitizedPlayers : sanitizePlayerIdList(ourEntry.starters);
+    const teamTotals = computeStarterTotals(ourEntry, starters, { snapshot, week: resolvedWeek });
+
+    return {
+      leagueId: normalizedLeagueId,
+      rosterId: String(ourEntry.roster_id ?? '') || normalizedRosterId,
+      week: resolvedWeek,
+      generatedAt: Date.now(),
+      team: teamTotals,
+    };
+  } catch (error) {
+    console.warn('Sleeper+ team totals failed; returning fallback payload', {
+      leagueId: normalizedLeagueId || leagueId,
+      rosterId: normalizedRosterId,
+      week,
+      playerCount: sanitizedPlayers.length,
+      error: error?.message || error,
+    });
+    return {
+      leagueId: normalizedLeagueId || leagueId || '',
+      rosterId: normalizedRosterId,
+      week: Number.isFinite(week) ? Number(week) : null,
+      generatedAt: Date.now(),
+      team: null,
+      error: error?.message || 'Unknown error',
+    };
+  }
+};
+
+const getActiveWeekPayload = async ({ leagueId }) => {
+  const normalizedLeagueId = normalizeLeagueId(leagueId);
+  if (!normalizedLeagueId) {
+    throw new Error('League unavailable');
+  }
+  const [snapshot, state] = await Promise.all([
+    ensureLeagueSnapshot(normalizedLeagueId),
+    fetchNflState().catch((error) => {
+      console.warn('Sleeper+ state lookup failed for active week', error);
+      return null;
+    }),
+  ]);
+  if (!snapshot) {
+    throw new Error('League data unavailable');
+  }
+
+  const minWeek = Number(snapshot.startWeek) || 1;
+  const rawMaxWeek = Number(snapshot.seasonEndWeek) || Number(snapshot.currentWeek) || minWeek;
+  const maxWeek = Math.max(rawMaxWeek, minWeek);
+  const snapshotWeek = Number(snapshot.currentWeek);
+  const statsWeekValue = Number(snapshot.statsWeek);
+  const startWeekValue = Number(snapshot.startWeek);
+  const displayWeekValue = Number(snapshot.displayWeek);
+  const stateWeekCandidate = Number(state?.display_week ?? state?.week ?? state?.leg);
+  const resolvedStateWeek = Number.isFinite(stateWeekCandidate)
+    ? Math.min(Math.max(stateWeekCandidate, minWeek), maxWeek)
+    : null;
+  const resolvedWeek = Number.isFinite(resolvedStateWeek)
+    ? resolvedStateWeek
+    : Number.isFinite(snapshotWeek)
+    ? snapshotWeek
+    : null;
+  const fallbackDisplayWeek = Number.isFinite(displayWeekValue)
+    ? displayWeekValue
+    : Number.isFinite(snapshotWeek)
+    ? snapshotWeek
+    : null;
+
+  return {
+    leagueId: normalizedLeagueId,
+    week: resolvedWeek,
+    currentWeek: Number.isFinite(snapshotWeek) ? snapshotWeek : null,
+    displayWeek: resolvedWeek ?? fallbackDisplayWeek,
+    statsWeek: Number.isFinite(statsWeekValue) ? statsWeekValue : null,
+    startWeek: Number.isFinite(startWeekValue) ? startWeekValue : null,
+    season: snapshot.season ?? null,
+  };
 };
 
 const normalizeNameToken = (value) => (value || '').toString().toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -820,9 +1402,13 @@ const clampWeekWithinSeason = (snapshot, requestedWeek) => {
 };
 
 const getPlayerTrendPayload = async ({ leagueId, playerId, week, attempt = 0 }) => {
-  const [directory, snapshot] = await Promise.all([
+  const [directory, snapshot, state] = await Promise.all([
     ensurePlayerDirectoryRecords(),
     ensureLeagueSnapshot(leagueId),
+    fetchNflState().catch((error) => {
+      console.warn('Sleeper+ state lookup failed for sparkline context', error);
+      return null;
+    }),
   ]);
 
   if (!snapshot) {
@@ -841,7 +1427,9 @@ const getPlayerTrendPayload = async ({ leagueId, playerId, week, attempt = 0 }) 
   }
 
   const selectedWeek = clampWeekWithinSeason(snapshot, week);
-  const sparklineWeek = Number(snapshot.currentWeek) || selectedWeek;
+  const stateWeekCandidate = Number(state?.display_week ?? state?.week ?? state?.leg);
+  const sparklineWeekSource = Number.isFinite(stateWeekCandidate) ? stateWeekCandidate : snapshot.currentWeek;
+  const sparklineWeek = clampWeekWithinSeason(snapshot, sparklineWeekSource);
   const weeklyEntries = snapshot.playerWeekly?.[playerId] || [];
   const weeklySeries = buildWeeklySeries(weeklyEntries, {
     startWeek: snapshot.startWeek,
@@ -857,6 +1445,26 @@ const getPlayerTrendPayload = async ({ leagueId, playerId, week, attempt = 0 }) 
   const matchupSource = snapshot.matchupsByWeek?.[selectedWeek] || snapshot.matchups || {};
   const matchup = matchupSource?.[playerId] || null;
   const opponentRanks = snapshot.matchupRanksByWeek?.[selectedWeek] || snapshot.matchupRanks || null;
+  const playerTeam = (playerRecord.team || '').toUpperCase();
+
+  if (matchup) {
+    console.debug('Sleeper+ matchup payload', {
+      leagueId,
+      playerId,
+      week: selectedWeek,
+      opponent: matchup.opponent,
+      rank: matchup.rank,
+      scale: matchup.scale,
+    });
+  } else {
+    console.info('Sleeper+ matchup missing', {
+      leagueId,
+      playerId,
+      week: selectedWeek,
+      matchupKeys: Object.keys(matchupSource || {}),
+      hasOpponentRanks: Boolean(opponentRanks),
+    });
+  }
 
   return {
     leagueId,
@@ -871,6 +1479,7 @@ const getPlayerTrendPayload = async ({ leagueId, playerId, week, attempt = 0 }) 
     matchup,
     opponentRanks,
     primaryPosition: derivePrimaryPosition(playerRecord),
+    nflTeam: playerTeam,
   };
 };
 
@@ -1029,11 +1638,32 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     );
   }
 
+  if (message.type === 'SLEEPER_PLUS_GET_ACTIVE_WEEK') {
+    return respondAsync(
+      getActiveWeekPayload({ leagueId: message.leagueId }),
+      sendResponse,
+      'active week request'
+    );
+  }
+
   if (message.type === 'SLEEPER_PLUS_GET_PLAYER_TREND') {
     return respondAsync(
       getPlayerTrendPayload({ leagueId: message.leagueId, playerId: message.playerId, week: message.week }),
       sendResponse,
       'player trend'
+    );
+  }
+
+  if (message.type === 'SLEEPER_PLUS_GET_TEAM_TOTALS') {
+    return respondAsync(
+      getTeamTotalsPayload({
+        leagueId: message.leagueId,
+        rosterId: message.rosterId,
+        week: message.week,
+        playerIds: message.playerIds,
+      }),
+      sendResponse,
+      'team totals'
     );
   }
 
