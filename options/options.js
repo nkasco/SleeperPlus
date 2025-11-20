@@ -6,6 +6,7 @@
 	const DEFAULT_SHOW_OPPONENT_RANKS = true;
 	const DEFAULT_SHOW_SPARKLINE_ALWAYS = true;
 	const DEFAULT_SHOW_TEAM_TOTALS = true;
+	const DEFAULT_ENABLE_NAVBAR_OVERRIDE = true;
 	const MIN_CHAT_MAX_WIDTH = 200;
 	const MAX_CHAT_MAX_WIDTH = 800;
 	const LAST_REFRESH_STORAGE_KEY = 'sleeperPlus:lastDataRefresh';
@@ -21,6 +22,7 @@
 	const showOpponentRanksInput = document.getElementById('show-opponent-ranks');
 	const showSparklineAlwaysInput = document.getElementById('show-sparkline-always');
 	const showTeamTotalsInput = document.getElementById('show-team-totals');
+	const enableNavbarOverrideInput = document.getElementById('enable-navbar-override');
 	const message = document.getElementById('message');
 	const saveButton = document.getElementById('save-button');
 	const goToLeagueButton = document.getElementById('go-to-league-button');
@@ -40,6 +42,7 @@
 		showOpponentRanks: DEFAULT_SHOW_OPPONENT_RANKS,
 		showSparklineAlways: DEFAULT_SHOW_SPARKLINE_ALWAYS,
 		showTeamTotals: DEFAULT_SHOW_TEAM_TOTALS,
+		enableNavbarOverride: DEFAULT_ENABLE_NAVBAR_OVERRIDE,
 	};
 
 	let refreshInFlight = false;
@@ -267,6 +270,10 @@
 				typeof result.showTeamTotals === 'boolean'
 					? result.showTeamTotals
 					: DEFAULT_SHOW_TEAM_TOTALS,
+			enableNavbarOverride:
+				typeof result.enableNavbarOverride === 'boolean'
+					? result.enableNavbarOverride
+					: DEFAULT_ENABLE_NAVBAR_OVERRIDE,
 		};
 	};
 
@@ -283,6 +290,7 @@
 					'showOpponentRanks',
 					'showSparklineAlways',
 					'showTeamTotals',
+					'enableNavbarOverride',
 				],
 				(result) => resolve(sanitizeStoredSettings(result))
 			);
@@ -308,6 +316,7 @@
 					'showOpponentRanks',
 					'showSparklineAlways',
 					'showTeamTotals',
+					'enableNavbarOverride',
 				],
 				() => resolve()
 			);
@@ -323,6 +332,7 @@
 		chatWidthInput.disabled = isLoading;
 		disableExtensionInput.disabled = isLoading;
 		showButtonInput.disabled = isLoading;
+		enableNavbarOverrideInput.disabled = isLoading;
 		enableTrendsInput.disabled = isLoading;
 		showOpponentRanksInput.disabled = isLoading;
 		showSparklineAlwaysInput.disabled = isLoading;
@@ -473,6 +483,7 @@
 		}
 
 		const showSettingsButton = showButtonInput.checked;
+		const enableNavbarOverride = enableNavbarOverrideInput.checked;
 		const disableSleeperPlus = disableExtensionInput.checked;
 		const enableTrendOverlays = enableTrendsInput.checked;
 		const showOpponentRanks = showOpponentRanksInput.checked;
@@ -486,6 +497,7 @@
 				leagueIds,
 				chatMaxWidth: validatedChatWidth,
 				showSettingsButton,
+				enableNavbarOverride,
 				disableSleeperPlus,
 				enableTrendOverlays,
 				showOpponentRanks,
@@ -496,6 +508,7 @@
 			state.leagueIds = leagueIds;
 			state.chatMaxWidth = validatedChatWidth;
 			state.showSettingsButton = showSettingsButton;
+			state.enableNavbarOverride = enableNavbarOverride;
 			state.disableSleeperPlus = disableSleeperPlus;
 			state.enableTrendOverlays = enableTrendOverlays;
 			state.showOpponentRanks = showOpponentRanks;
@@ -549,6 +562,7 @@
 			state.leagueIds = [];
 			state.chatMaxWidth = DEFAULT_CHAT_MAX_WIDTH;
 			state.showSettingsButton = DEFAULT_SHOW_SETTINGS_BUTTON;
+			state.enableNavbarOverride = DEFAULT_ENABLE_NAVBAR_OVERRIDE;
 			state.disableSleeperPlus = DEFAULT_DISABLE_SLEEPER_PLUS;
 			state.enableTrendOverlays = DEFAULT_ENABLE_TREND_OVERLAYS;
 			state.showOpponentRanks = DEFAULT_SHOW_OPPONENT_RANKS;
@@ -560,6 +574,7 @@
 			chatWidthInput.value = DEFAULT_CHAT_MAX_WIDTH;
 			disableExtensionInput.checked = DEFAULT_DISABLE_SLEEPER_PLUS;
 			showButtonInput.checked = DEFAULT_SHOW_SETTINGS_BUTTON;
+			enableNavbarOverrideInput.checked = DEFAULT_ENABLE_NAVBAR_OVERRIDE;
 			enableTrendsInput.checked = DEFAULT_ENABLE_TREND_OVERLAYS;
 			showOpponentRanksInput.checked = DEFAULT_SHOW_OPPONENT_RANKS;
 			showSparklineAlwaysInput.checked = DEFAULT_SHOW_SPARKLINE_ALWAYS;
@@ -623,6 +638,7 @@
 			state.leagueIds = stored.leagueIds;
 			state.chatMaxWidth = stored.chatMaxWidth;
 			state.showSettingsButton = stored.showSettingsButton;
+			state.enableNavbarOverride = stored.enableNavbarOverride;
 			state.disableSleeperPlus = stored.disableSleeperPlus;
 			state.enableTrendOverlays = stored.enableTrendOverlays;
 			state.showOpponentRanks = stored.showOpponentRanks;
@@ -634,6 +650,7 @@
 			chatWidthInput.value = state.chatMaxWidth;
 			disableExtensionInput.checked = state.disableSleeperPlus;
 			showButtonInput.checked = state.showSettingsButton;
+			enableNavbarOverrideInput.checked = state.enableNavbarOverride;
 			enableTrendsInput.checked = state.enableTrendOverlays;
 			showOpponentRanksInput.checked = state.showOpponentRanks;
 			showSparklineAlwaysInput.checked = state.showSparklineAlways;

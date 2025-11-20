@@ -19,6 +19,7 @@
   const DEFAULT_SHOW_OPPONENT_RANKS = true;
   const DEFAULT_SHOW_SPARKLINE_ALWAYS = true;
   const DEFAULT_SHOW_TEAM_TOTALS = true;
+  const DEFAULT_ENABLE_NAVBAR_OVERRIDE = true;
   const MIN_CHAT_MAX_WIDTH = 200;
   const MAX_CHAT_MAX_WIDTH = 800;
   const CENTER_PANEL_SPARKLINE_THRESHOLD = 800;
@@ -33,6 +34,7 @@
     showOpponentRanks: DEFAULT_SHOW_OPPONENT_RANKS,
     showSparklineAlways: DEFAULT_SHOW_SPARKLINE_ALWAYS,
     showTeamTotals: DEFAULT_SHOW_TEAM_TOTALS,
+    enableNavbarOverride: DEFAULT_ENABLE_NAVBAR_OVERRIDE,
   };
 
   let leagueIds = [];
@@ -43,6 +45,7 @@
   let showOpponentRanks = DEFAULT_SHOW_OPPONENT_RANKS;
   let showSparklineAlways = DEFAULT_SHOW_SPARKLINE_ALWAYS;
   let showTeamTotals = DEFAULT_SHOW_TEAM_TOTALS;
+  let enableNavbarOverride = DEFAULT_ENABLE_NAVBAR_OVERRIDE;
   let isActive = false;
   let settingsObserver = null;
   let bodyObserver = null;
@@ -191,6 +194,10 @@
         typeof raw.showTeamTotals === 'boolean'
           ? raw.showTeamTotals
           : DEFAULT_SETTINGS.showTeamTotals,
+      enableNavbarOverride:
+        typeof raw.enableNavbarOverride === 'boolean'
+          ? raw.enableNavbarOverride
+          : DEFAULT_SETTINGS.enableNavbarOverride,
     };
   };
 
@@ -207,6 +214,7 @@
           'showOpponentRanks',
           'showSparklineAlways',
           'showTeamTotals',
+          'enableNavbarOverride',
         ],
         (result) => resolve(sanitizeSettings(result))
       );
@@ -588,6 +596,105 @@
       .${REFRESH_INDICATOR_CLASS}.${REFRESH_INDICATOR_HIDDEN_CLASS} {
         display: none !important;
       }
+      /* Harmonize team roster item alternating backgrounds with page theme */
+      .team-roster-item.odd {
+        background: rgba(24,28,40,0.28) !important;
+        border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.01) !important;
+      }
+      .team-roster-item.even {
+        background: rgba(31,36,49,0.12) !important;
+      }
+      .team-roster-item.out {
+        background: rgba(200,50,90,0.025) !important;
+        border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.01) !important;
+      }
+    `;
+
+  const getNavbarStyleBlock = () => `
+      /* Center tab selector styling — Option E (sleek neon pill) */
+      .center-tab-selector {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px;
+        border-radius: 16px;
+        background: linear-gradient(120deg, rgba(28,38,54,0.92) 0%, rgba(44,62,80,0.88) 100%);
+        border: 1px solid rgba(120, 180, 255, 0.08);
+      }
+      .center-tab-selector .item-tab {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 18px;
+        border-radius: 999px;
+        cursor: pointer;
+        color: rgba(236, 242, 255, 0.78);
+        background: rgba(255, 255, 255, 0.01);
+        border: 1px solid transparent;
+        transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1), color 200ms ease, background 200ms ease, border-color 200ms ease;
+      }
+      .center-tab-selector .item-tab::after {
+        content: '';
+        position: absolute;
+        inset: 2px;
+        border-radius: inherit;
+        border: 1px solid rgba(255, 255, 255, 0.04);
+        opacity: 0;
+        transition: opacity 200ms ease;
+      }
+      .center-tab-selector .item-tab:hover {
+        transform: translateY(-1px);
+        color: #eaf6ff;
+        border-color: rgba(123, 195, 255, 0.12);
+        background: linear-gradient(110deg, #2a3956 0%, #2e4a5e 100%);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.18);
+      }
+      .center-tab-selector .item-tab:hover::after {
+        opacity: 1;
+      }
+      .center-tab-selector .item-tab.selected {
+        color: #1a2e3a;
+        background: linear-gradient(110deg, #b3d8ff 0%, #bafff2 100%);
+        border-color: rgba(123, 195, 255, 0.18);
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.32);
+        text-shadow: 0 1px 8px rgba(255,255,255,0.18);
+      }
+      .center-tab-selector .item-tab.selected::after {
+        opacity: 0;
+      }
+      .center-tab-selector .item-tab:focus-visible {
+        outline: none;
+        box-shadow: 0 0 0 3px rgba(123, 195, 255, 0.35);
+      }
+      .center-tab-selector .item-tab svg {
+        width: 13px;
+        height: 13px;
+        flex: 0 0 13px;
+        color: inherit;
+        opacity: 0.7;
+        transition: opacity 200ms ease;
+      }
+      .center-tab-selector .item-tab:hover svg,
+      .center-tab-selector .item-tab.selected svg {
+        opacity: 1;
+      }
+      .center-tab-selector .item-tab svg,
+      .center-tab-selector .item-tab svg * {
+        stroke: currentColor !important;
+        fill: currentColor !important;
+        color: currentColor !important;
+        stroke-width: 1 !important;
+      }
+      .center-tab-selector .selector-title {
+        font-size: 0.78rem;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        font-weight: 600;
+        color: inherit;
+      }
     `;
 
   const getTrendStyleBlock = () => `
@@ -640,12 +747,16 @@
         text-align: right;
         width: 100%;
       }
-      .sleeper-plus-trend__chart svg {
+      .sleeper-plus-trend__chart > svg {
+        flex: 0 0 16px;
         width: 100%;
         height: 48px;
       }
-      .sleeper-plus-trend__chart polygon {
-        fill: rgba(255, 255, 255, 0.04);
+      .sleeper-plus-trend__chart svg {
+        background: transparent;
+      }
+      .sleeper-plus-trend__chart svg polygon {
+        fill: rgba(255, 255, 255, 0.035) !important;
       }
       .sleeper-plus-trend__chart .sleeper-plus-line {
         fill: none;
@@ -657,7 +768,7 @@
         stroke: #22c55e;
       }
       .sleeper-plus-trend__chart .sleeper-plus-line.line-under {
-        stroke: #ef4444;
+        stroke: #e35a5a;
       }
       .sleeper-plus-user-tab-row {
         align-items: stretch;
@@ -668,11 +779,11 @@
         flex: 0 0 auto;
         width: 700px;
         max-width: 100%;
-        margin: 0px auto 2px;
+        margin: 6px auto 2px;
         padding: 13px 22px 10px;
         border-radius: 24px;
-        border: 1px solid rgba(148, 163, 184, 0.25);
-        background: linear-gradient(135deg, rgba(15, 23, 42, 0.96), rgba(15, 23, 42, 0.78));
+        border: 1px solid rgba(120, 180, 255, 0.08);
+        background: linear-gradient(120deg, rgba(28,38,54,0.80) 0%, rgba(44,62,80,0.65) 100%);
         box-shadow: 0 24px 45px rgba(2, 6, 23, 0.5);
         display: flex;
         flex-direction: column;
@@ -746,6 +857,8 @@
         border-radius: 50%;
         overflow: hidden;
         box-shadow: 0 6px 16px rgba(2, 6, 23, 0.65);
+        border: 1px solid rgba(255,255,255,0.06);
+        background-clip: padding-box;
       }
       .sleeper-plus-team-totals__identity-row .info {
         flex: 1 1 auto;
@@ -1059,7 +1172,7 @@
         fill: #22c55e;
       }
       .sleeper-plus-trend__chart .sleeper-plus-dot.under {
-        fill: #ef4444;
+        fill: #e35a5a;
       }
       .sleeper-plus-trend__chart .sleeper-plus-dot.neutral {
         fill: #3b82f6;
@@ -1168,7 +1281,8 @@
     }
 
     const style = ensureStyleElement();
-    style.textContent = getButtonStyleBlock();
+    const navbarStyles = enableNavbarOverride ? getNavbarStyleBlock() : '';
+    style.textContent = `${getButtonStyleBlock()}${navbarStyles}`;
   };
 
   const updateLayoutStyles = () => {
@@ -1194,7 +1308,10 @@
       }
     `;
 
-    const buttonStyles = shouldDisplaySettingsButton() ? getButtonStyleBlock() : '';
+    const shouldRenderButtonStyles = shouldDisplaySettingsButton();
+    const buttonStyles = shouldRenderButtonStyles ? getButtonStyleBlock() : '';
+    const navbarStyles =
+      shouldRenderButtonStyles && enableNavbarOverride ? getNavbarStyleBlock() : '';
     const trendStyles = getTrendStyleBlock();
     const compactStyles = `.${COMPACT_PANEL_CLASS} .sleeper-plus-trend__chart,
         .${COMPACT_PANEL_CLASS} .sleeper-plus-trend__meta {
@@ -1214,7 +1331,7 @@
           border-left: none !important;
         }`;
 
-    style.textContent = `${layoutStyles}${buttonStyles}${trendStyles}${compactStyles}`;
+    style.textContent = `${layoutStyles}${buttonStyles}${navbarStyles}${trendStyles}${compactStyles}`;
   };
 
   const setCompactCenterPanelState = (shouldCompact) => {
@@ -2378,7 +2495,7 @@
     const CURRENT_WEEK_COLOR = '#fbbf24';
     const LINE_COLORS = {
       over: '#22c55e',
-      under: '#ef4444',
+      under: '#e35a5a',
       neutral: '#3b82f6',
       future: '#94a3b8',
       current: CURRENT_WEEK_COLOR,
@@ -4710,6 +4827,7 @@
     showOpponentRanks = stored.showOpponentRanks;
     showSparklineAlways = stored.showSparklineAlways;
     showTeamTotals = stored.showTeamTotals;
+    enableNavbarOverride = stored.enableNavbarOverride;
 
     evaluateActivation();
     currentBaseUrl = window.location.href;
@@ -4814,6 +4932,24 @@
       if (showTeamTotals !== nextShowTeamTotals) {
         showTeamTotals = nextShowTeamTotals;
         shouldEvaluate = true;
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(changes, 'enableNavbarOverride')) {
+      const nextEnableNavbarOverride =
+        typeof changes.enableNavbarOverride.newValue === 'boolean'
+          ? changes.enableNavbarOverride.newValue
+          : DEFAULT_ENABLE_NAVBAR_OVERRIDE;
+
+      if (enableNavbarOverride !== nextEnableNavbarOverride) {
+        enableNavbarOverride = nextEnableNavbarOverride;
+        if (isActive) {
+          updateLayoutStyles();
+        } else if (shouldDisplaySettingsButton()) {
+          applyButtonOnlyStyles();
+        } else {
+          removeStyles();
+        }
       }
     }
 
