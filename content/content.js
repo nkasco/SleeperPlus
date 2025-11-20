@@ -668,7 +668,7 @@
         flex: 0 0 auto;
         width: 700px;
         max-width: 100%;
-        margin: 6px auto 2px;
+        margin: 0px auto 2px;
         padding: 13px 22px 10px;
         border-radius: 24px;
         border: 1px solid rgba(148, 163, 184, 0.25);
@@ -775,7 +775,7 @@
         flex: 1 1 auto;
         display: flex;
         flex-direction: column;
-        gap: 9px;
+        gap: 0px;
       }
       .sleeper-plus-team-totals.is-hidden {
         display: none !important;
