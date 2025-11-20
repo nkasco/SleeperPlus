@@ -597,18 +597,44 @@
         display: none !important;
       }
       /* Harmonize team roster item alternating backgrounds with page theme */
+      .team-roster-item {
+        margin: 6px 6px !important;
+        border-radius: 12px !important;
+        border: 1px solid rgba(120, 180, 255, 0.12) !important;
+        background-clip: padding-box;
+      }
       .team-roster-item.odd {
         background: rgba(24,28,40,0.28) !important;
-        border-radius: 10px;
-        border: 1px solid rgba(255,255,255,0.01) !important;
+        border-color: rgba(120, 180, 255, 0.18) !important;
       }
       .team-roster-item.even {
         background: rgba(31,36,49,0.12) !important;
       }
       .team-roster-item.out {
         background: rgba(200,50,90,0.025) !important;
-        border-radius: 10px;
-        border: 1px solid rgba(255,255,255,0.01) !important;
+        border-color: rgba(239, 68, 68, 0.35) !important;
+      }
+      /* Selected player state follows the extension's deep-navy/neon accent theme */
+      .team-roster-item.selected.valid {
+        background: linear-gradient(132deg, rgba(24,38,64,0.96) 0%, rgba(31,73,112,0.92) 55%, rgba(24,137,171,0.88) 100%) !important;
+        border-color: rgba(123, 195, 255, 0.65) !important;
+        box-shadow: 0 12px 32px rgba(5, 8, 20, 0.55), inset 0 0 20px rgba(126, 235, 255, 0.28) !important;
+        color: inherit;
+      }
+      .team-roster-item.selected.valid .link-button.cell-position {
+        background: transparent !important;
+        border-color: transparent !important;
+        box-shadow: none !important;
+      }
+      .team-roster-item.selected.valid .league-slot-position-square {
+        background: linear-gradient(135deg, rgba(8,16,32,0.95) 0%, rgba(17,44,78,0.95) 60%, rgba(23,137,178,0.9) 100%) !important;
+        border-radius: 14px !important;
+        border: 1px solid rgba(123, 195, 255, 0.4) !important;
+        box-shadow: inset 0 0 12px rgba(19,113,167,0.35), 0 4px 12px rgba(5, 8, 20, 0.65) !important;
+      }
+      .team-roster-item.selected.valid .league-slot-position-square > div {
+        color: #e8f7ff !important;
+        letter-spacing: 0.04em;
       }
     `;
 
@@ -1500,6 +1526,8 @@
     ];
     const SCHEDULE_KEYWORDS = ['schedule', 'matchup', 'game', 'bye', 'status'];
     const SCHEDULE_DATA_ATTRIBUTES = ['data-testid', 'data-test', 'data-qa'];
+    const SCHEDULE_REHYDRATION_SELECTOR = SCHEDULE_WRAPPER_SELECTORS.join(',');
+    let inlineMatchupState = new WeakMap();
     const NFL_TEAM_CODES = [
       'ARI',
       'ATL',
@@ -1780,6 +1808,7 @@
       delete item.dataset[DATASET_PLAYER_ID];
       delete item.dataset[DATASET_STATE];
       delete item.dataset[DATASET_WEEK];
+      inlineMatchupState.delete(item);
     };
 
     const cleanupAll = () => {
@@ -1793,7 +1822,9 @@
         delete item.dataset[DATASET_PLAYER_ID];
         delete item.dataset[DATASET_STATE];
         delete item.dataset[DATASET_WEEK];
+        inlineMatchupState.delete(item);
       });
+      inlineMatchupState = new WeakMap();
     };
 
     const setItemWeekKey = (item, weekKey) => {
@@ -2356,6 +2387,37 @@
       value.textContent = isByeOpponent ? 'n/a' : '—';
     };
 
+    const rehydrateInlineMatchup = (item) => {
+      if (!item || !inlineMatchupState.has(item)) {
+        return;
+      }
+      const cachedMatchup = inlineMatchupState.get(item) || null;
+      if (!updateInlineMatchup(item, cachedMatchup)) {
+        ensureInlinePlaceholder(item);
+      }
+    };
+
+    const resolveInlineMutationTarget = (mutation) => {
+      if (!mutation || mutation.type !== 'childList') {
+        return null;
+      }
+      const targetElement = mutation.target instanceof Element ? mutation.target : null;
+      if (targetElement?.matches?.(SCHEDULE_REHYDRATION_SELECTOR)) {
+        return targetElement.closest('.team-roster-item');
+      }
+      const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
+      for (let index = 0; index < nodes.length; index += 1) {
+        const node = nodes[index];
+        if (!(node instanceof Element)) {
+          continue;
+        }
+        if (node.matches(SCHEDULE_REHYDRATION_SELECTOR)) {
+          return node.closest('.team-roster-item');
+        }
+      }
+      return null;
+    };
+
     const ensureInlinePlaceholder = (item, scheduleWrapper) => {
       const host = scheduleWrapper || findScheduleWrapper(item);
       if (!host) {
@@ -2783,6 +2845,7 @@
       setItemWeekKey(item, weekKey || getCurrentWeekKey());
       if (showOpponentRanks && !overlayRoster) {
         ensureInlinePlaceholder(item, scheduleWrapper);
+        inlineMatchupState.set(item, null);
       }
     };
 
@@ -2842,6 +2905,7 @@
       const allowOpponentDetails = showOpponentRanks && !overlayRoster;
       if (allowOpponentDetails) {
         const matchupData = data.matchup || buildFallbackMatchup(data, item, scheduleWrapper);
+        inlineMatchupState.set(item, matchupData || null);
         if (matchupData) {
           console.debug('Sleeper+ inline matchup payload', {
             playerId: data?.playerId || item?.dataset?.[DATASET_PLAYER_ID] || null,
@@ -3061,12 +3125,24 @@
         if (!running) {
           return;
         }
-        const shouldScan = mutations.some(shouldReactToMutation);
+        let shouldScan = false;
+        const hydrationTargets = new Set();
+        mutations.forEach((mutation) => {
+          if (shouldReactToMutation(mutation)) {
+            shouldScan = true;
+            return;
+          }
+          const targetItem = resolveInlineMutationTarget(mutation);
+          if (targetItem) {
+            hydrationTargets.add(targetItem);
+          }
+        });
+        hydrationTargets.forEach((item) => rehydrateInlineMatchup(item));
         if (shouldScan) {
           scheduleScan();
         }
       });
-      rosterObserver.observe(target, { childList: true });
+      rosterObserver.observe(target, { childList: true, subtree: true });
       observedRoster = target;
       return true;
     };
