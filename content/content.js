@@ -45,6 +45,7 @@
   let showTeamTotals = DEFAULT_SHOW_TEAM_TOTALS;
   let isActive = false;
   let settingsObserver = null;
+  let bodyObserver = null;
   let currentBaseUrl = '';
   let centerPanelResizeObserver = null;
   let observedCenterPanel = null;
@@ -511,7 +512,7 @@
         align-items: center;
         justify-content: flex-start;
         padding: 0;
-        gap: 6px;
+        gap: 9px;
         min-width: 72px;
       }
       #${BUTTON_CONTAINER_ID}.${ENTRY_CLASS} {
@@ -4385,6 +4386,115 @@
       if (container.parentElement !== target.parent || container !== target.parent.lastElementChild) {
         target.parent.appendChild(container);
       }
+      // Remove injected helper spacing and tighten the actions row gap so
+      // buttons sit closer together and align vertically.
+      try {
+        container.classList.remove('space');
+        // Set a moderate outer gap for the actions row, then ensure each
+        // action child uses a compact vertical gap so the label sits near
+        // its button (matching the Sleeper+ appearance).
+        target.parent.style.gap = '18px';
+        target.parent.style.columnGap = '18px';
+        target.parent.style.alignItems = 'center';
+        Array.from(target.parent.children).forEach((sib) => {
+          try {
+            if (sib !== container && (sib.tagName === 'BUTTON' || sib.classList.contains('button') || sib.classList.contains('btn') || sib.classList.contains('btn-container') || sib.classList.contains('action'))) {
+              sib.style.margin = '0';
+              sib.style.padding = sib.style.padding || '0';
+              sib.style.alignSelf = 'center';
+              // Ensure vertical stacking and a compact gap between the
+              // button and its label (some site markup uses flex column).
+              sib.style.display = sib.style.display || 'inline-flex';
+              sib.style.flexDirection = 'column';
+              sib.style.gap = '6px';
+              sib.style.alignItems = 'center';
+
+              // If the label is a known class, tighten its margin to match
+              // the injected Sleeper+ label spacing.
+              const label = sib.querySelector('.btn-text, .button-text, .btn-label, .label, .btn__text');
+              if (label) {
+                label.style.margin = '0';
+                label.style.marginTop = '6px';
+              }
+            }
+          } catch (_) {}
+        });
+      } catch (_) {}
+      // Attempt to mirror the site's trade button appearance exactly by
+      // copying class names and key computed visual styles from a nearby
+      // trade/action button in the same actions container. This allows the
+      // injected Sleeper+ button to match size, hover, and other visual
+      // cues without needing brittle CSS duplication.
+      try {
+        const candidates = Array.from(target.parent.querySelectorAll('button, .button, .btn'));
+        let found = candidates.find((el) => /trade/i.test((el.textContent || '').trim()));
+        if (!found && candidates.length) {
+          found = candidates[0];
+        }
+        if (found) {
+          const wrapper = container.querySelector('.sleeper-plus-settings-button-shell');
+          const inner = container.querySelector(`.${BUTTON_CLASS}`);
+          // Copy class list from the reference button to our wrapper so
+          // site CSS (including :hover rules) applies automatically.
+          try {
+            found.classList.forEach((c) => {
+              if (!c) return;
+              // Avoid copying layout-specific classes that would move the node
+              // itself (keep visual styling classes only). This is conservative;
+              // if a class causes unexpected behavior we'll remove it later.
+              wrapper.classList.add(c);
+            });
+          } catch (_) {}
+
+          // Copy a few key computed styles to ensure exact sizing when site
+          // uses inline or computed values rather than only classes.
+          const cs = window.getComputedStyle(found);
+          if (wrapper) {
+            wrapper.style.width = cs.width;
+            wrapper.style.height = cs.height;
+            wrapper.style.borderRadius = cs.borderRadius;
+            wrapper.style.border = cs.border;
+            wrapper.style.background = cs.background;
+            wrapper.style.boxShadow = cs.boxShadow;
+            wrapper.style.transition = cs.transition;
+            wrapper.style.padding = cs.padding;
+          }
+
+          // Tighten spacing for the actions placement so the injected button
+          // aligns vertically with neighboring action buttons and doesn't
+          // introduce large gaps. We apply conservative inline styles here
+          // to override any parent layout spacing that affects only this
+          // injected container.
+          try {
+            container.style.margin = '0';
+            container.style.minWidth = '48px';
+            container.style.width = 'auto';
+            container.style.display = 'inline-flex';
+            container.style.flexDirection = 'column';
+            container.style.gap = '9px';
+            container.style.alignItems = 'center';
+            container.style.justifyContent = 'center';
+            container.style.alignSelf = 'center';
+            // also ensure the wrapper aligns and doesn't add extra spacing
+            if (wrapper) {
+              wrapper.style.margin = '0';
+              wrapper.style.boxSizing = 'border-box';
+            }
+          } catch (_) {}
+
+          // Copy SVG sizing if present on the reference button
+          const refSvg = found.querySelector('svg');
+          const ourSvg = container.querySelector('svg');
+          if (refSvg && ourSvg) {
+            const rcs = window.getComputedStyle(refSvg);
+            ourSvg.style.width = refSvg.getAttribute('width') || rcs.width || refSvg.style.width || '20px';
+            ourSvg.style.height = refSvg.getAttribute('height') || rcs.height || refSvg.style.height || '20px';
+          }
+        }
+      } catch (e) {
+        // Non-fatal: if anything fails here we still show the default button
+        // styling defined elsewhere in the extension.
+      }
     } else {
       container.classList.remove('action', 'btn-container', 'space');
       if (headerSettingsParent !== target.parent) {
@@ -4464,6 +4574,7 @@
 
   const deactivateExtension = () => {
     stopCenterPanelMonitor();
+    stopBodyObserver();
     if (!isActive) {
       if (shouldDisplaySettingsButton()) {
         applyButtonOnlyStyles();
@@ -4549,6 +4660,46 @@
     window.addEventListener('hashchange', () => setTimeout(handleUrlChange, 0));
   };
 
+  const startBodyObserver = () => {
+    if (bodyObserver || !document.body) return;
+    bodyObserver = new MutationObserver((mutations) => {
+      let foundRosterChange = false;
+      for (let i = 0; i < mutations.length; i += 1) {
+        const m = mutations[i];
+        if (m.type !== 'childList') continue;
+        const nodes = Array.from(m.addedNodes || []).concat(Array.from(m.removedNodes || []));
+        for (let j = 0; j < nodes.length; j += 1) {
+          const node = nodes[j];
+          if (!(node instanceof Element)) continue;
+          if (node.matches && node.matches('.team-roster')) {
+            foundRosterChange = true;
+            break;
+          }
+          if (node.querySelector && node.querySelector('.team-roster')) {
+            foundRosterChange = true;
+            break;
+          }
+        }
+        if (foundRosterChange) break;
+      }
+      if (foundRosterChange) {
+        // Re-evaluate activation so the totals controller can attach when roster appears
+        try {
+          evaluateActivation();
+        } catch (e) {
+          // non-fatal
+        }
+      }
+    });
+    bodyObserver.observe(document.body, { childList: true, subtree: true });
+  };
+
+  const stopBodyObserver = () => {
+    if (!bodyObserver) return;
+    bodyObserver.disconnect();
+    bodyObserver = null;
+  };
+
   const initialize = async () => {
     const stored = await getStoredSettings();
     leagueIds = stored.leagueIds;
@@ -4563,6 +4714,7 @@
     evaluateActivation();
     currentBaseUrl = window.location.href;
     watchHistoryChanges();
+    startBodyObserver();
   };
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
