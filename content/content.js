@@ -1281,6 +1281,8 @@
         width: auto;
         flex: 0 0 auto;
         margin-left: auto;
+        position: relative;
+        z-index: 1;
       }
       .sleeper-plus-team-totals__heading-cluster {
         display: flex;
@@ -1332,6 +1334,9 @@
         flex-wrap: wrap;
         gap: 10px;
         width: 100%;
+        position: relative;
+        z-index: 2;
+        margin-top: -18px;
       }
       .sleeper-plus-team-totals__footer-left {
         flex: 1 1 260px;
