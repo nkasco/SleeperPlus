@@ -3,7 +3,7 @@
 	const DEFAULT_SHOW_SETTINGS_BUTTON = true;
 	const DEFAULT_DISABLE_SLEEPER_PLUS = false;
 	const DEFAULT_ENABLE_TREND_OVERLAYS = true;
-	const DEFAULT_SHOW_OPPONENT_RANKS = true;
+	const DEFAULT_SHOW_OPPONENT_RANKS = false;
 	const DEFAULT_SHOW_SPARKLINE_ALWAYS = true;
 	const DEFAULT_SHOW_TEAM_TOTALS = true;
 	const DEFAULT_ENABLE_NAVBAR_OVERRIDE = true;
@@ -258,10 +258,7 @@
 				typeof result.enableTrendOverlays === 'boolean'
 					? result.enableTrendOverlays
 					: DEFAULT_ENABLE_TREND_OVERLAYS,
-			showOpponentRanks:
-				typeof result.showOpponentRanks === 'boolean'
-					? result.showOpponentRanks
-					: DEFAULT_SHOW_OPPONENT_RANKS,
+			showOpponentRanks: false,
 			showSparklineAlways:
 				typeof result.showSparklineAlways === 'boolean'
 					? result.showSparklineAlways
