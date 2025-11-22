@@ -576,14 +576,33 @@
         flex-wrap: wrap;
       }
       
-      #${BUTTON_CONTAINER_ID} {
-        display: inline-flex;
+      /* Force the settings container to always layout its immediate
+         children horizontally and prevent wrapping (covers header & actions). */
+      #${BUTTON_CONTAINER_ID},
+      #${BUTTON_CONTAINER_ID}[data-placement='header'],
+      #${BUTTON_CONTAINER_ID}[data-placement='actions'] {
+        display: inline-flex !important;
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        align-items: center !important;
+        justify-content: flex-start !important;
+        padding: 0;
+        gap: var(--sp-space-sm) !important;
+        min-width: 72px;
+      }
+
+      /* Ensure the two wrapper groups (spark + main) are horizontal
+         siblings inside the container while keeping their internal
+         structure vertical (button above label). */
+      #${BUTTON_CONTAINER_ID} > .sleeper-plus-main-button-group,
+      #${BUTTON_CONTAINER_ID} > .sleeper-plus-spark-group {
+        display: flex;
         flex-direction: column;
         align-items: center;
-        justify-content: flex-start;
-        padding: 0;
-        gap: var(--sp-space-sm);
-        min-width: 72px;
+        justify-content: center;
+        flex: 0 1 auto;
+        min-width: 0;
+        gap: 6px;
       }
       
       #${BUTTON_CONTAINER_ID}.${ENTRY_CLASS} {
@@ -598,6 +617,30 @@
         border: none;
         background: transparent;
         margin: 0;
+        display: inline-flex !important;
+        flex-direction: row !important;
+        align-items: center !important;
+        gap: var(--sp-space-sm) !important;
+      }
+
+      /* When placed in the header, match the site header control size (40x40)
+         so the injected button visually aligns with the native settings control. */
+      #${BUTTON_CONTAINER_ID}[data-placement='header'] .sleeper-plus-settings-button-shell {
+        width: 40px !important;
+        height: 40px !important;
+      }
+
+      /* Ensure the main group wrapper does not force larger sizing in header */
+      #${BUTTON_CONTAINER_ID}[data-placement='header'] > .sleeper-plus-main-button-group {
+        gap: 4px;
+        min-width: 0;
+      }
+
+      /* Hide the under-label when the container is placed in the header
+         (non-team pages). This keeps the control compact and aligned with
+         the native header control appearance. */
+      #${BUTTON_CONTAINER_ID}[data-placement='header'] .sleeper-plus-settings-label {
+        display: none !important;
       }
       
       #${BUTTON_CONTAINER_ID} .sleeper-plus-settings-button-shell {
@@ -634,6 +677,13 @@
           0 0 0 2px rgba(34, 211, 238, 0.2),
           inset 0 1px 2px var(--sp-glass-shine);
         transform: translateY(-1px);
+      }
+
+      /* Active/toggled state for inline action buttons (e.g. sparkline toggle) */
+      #${BUTTON_CONTAINER_ID} .sleeper-plus-settings-button-shell.toggle-active {
+        border-color: var(--sp-accent-primary);
+        box-shadow: var(--sp-shadow-lg), 0 0 0 4px rgba(34,211,238,0.06), inset 0 1px 2px var(--sp-glass-shine);
+        transform: translateY(-1px) scale(1.02);
       }
       
       #${BUTTON_CONTAINER_ID} .sleeper-plus-settings-button-shell:hover::before,
@@ -831,6 +881,7 @@
       .center-tab-selector {
         display: inline-flex;
         align-items: center;
+        justify-content: center;
         gap: var(--sp-space-sm);
         padding: 6px;
         border-radius: var(--sp-radius-lg);
@@ -986,7 +1037,7 @@
         -webkit-box-orient: vertical !important;
         overflow: hidden !important;
         white-space: normal !important;
-        width: 100% !important;
+        width: auto !important;
       }
 
       .sleeper-plus-trend-middle {
@@ -5067,36 +5118,124 @@
     container.id = BUTTON_CONTAINER_ID;
     container.className = `${ENTRY_CLASS} sleeper-plus-settings-entry`;
     container.dataset.placement = 'header';
+    // Prevent layout shifts by reserving a conservative size and
+    // rendering hidden until we apply any site-specific sizing.
+    container.style.minWidth = '48px';
+    container.style.minHeight = '48px';
+    container.style.boxSizing = 'border-box';
+    container.style.opacity = '0';
+    container.style.transition = 'opacity var(--sp-transition-fast, 160ms) ease';
 
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = BUTTON_CLASS;
-    button.title = 'Sleeper+ Settings';
-    button.setAttribute('aria-label', 'Open Sleeper+ settings');
-    button.innerHTML = `
+    const innerButton = document.createElement('button');
+    innerButton.type = 'button';
+    innerButton.className = BUTTON_CLASS;
+    innerButton.title = 'Sleeper+ Settings';
+    innerButton.setAttribute('aria-label', 'Open Sleeper+ settings');
+    innerButton.innerHTML = `
       <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-        <path
-          d="M12 5a1 1 0 0 1 1 1v5h5a1 1 0 1 1 0 2h-5v5a1 1 0 1 1-2 0v-5H6a1 1 0 1 1 0-2h5V6a1 1 0 0 1 1-1z"
-          fill="currentColor"
-        />
+      <path
+        d="M12 5a1 1 0 0 1 1 1v5h5a1 1 0 1 1 0 2h-5v5a1 1 0 1 1-2 0v-5H6a1 1 0 1 1 0-2h5V6a1 1 0 0 1 1-1z"
+        fill="currentColor"
+      />
       </svg>`;
 
-    button.addEventListener('click', (event) => {
+    innerButton.addEventListener('click', (event) => {
       event.preventDefault();
       openSleeperPlusSettings();
     });
 
-    const buttonWrapper = document.createElement('div');
-    buttonWrapper.className = 'sleeper-plus-settings-button-shell';
-    buttonWrapper.appendChild(button);
+    // Apply shell class to the inner button (keeps original styling intent)
+    innerButton.className = `${BUTTON_CLASS} sleeper-plus-settings-button-shell`;
 
-    const label = document.createElement('div');
-    label.className = 'btn-text sleeper-plus-settings-label';
-    label.textContent = 'Sleeper+';
+    const innerLabel = document.createElement('div');
+    innerLabel.className = 'btn-text sleeper-plus-settings-label';
+    innerLabel.textContent = 'Sleeper+';
 
-    container.appendChild(buttonWrapper);
-    container.appendChild(label);
+    // New wrapper div that nests the main button and its label
+    const mainGroup = document.createElement('div');
+    mainGroup.className = 'sleeper-plus-main-button-group';
+    mainGroup.appendChild(innerButton);
+    mainGroup.appendChild(innerLabel);
+
+    // Expose variables the rest of the function expects:
+    // - `button` should refer to the node appended into the container (use the wrapper)
+    // - `label` is set to an empty fragment so subsequent container.appendChild(label) is a no-op
+    const button = mainGroup;
+    const label = document.createDocumentFragment();
+
+    // Always append the main group here; spark group is managed dynamically
+    container.appendChild(mainGroup);
+    // Keep the container visually hidden until sizing/copying completes
+    // to avoid visible resizing on hard refresh. It will be revealed by
+    // `injectSettingsButton` after any computed styles are copied.
     return container;
+  };
+
+  // Helper: create and return the sparkline group (with handlers)
+  const createSparkGroup = (container) => {
+    const existing = container && container.querySelector && container.querySelector('.sleeper-plus-spark-group');
+    if (existing) return existing;
+
+    const sparkButton = document.createElement('button');
+    sparkButton.type = 'button';
+    sparkButton.className = `${BUTTON_CLASS} sleeper-plus-settings-button-shell`;
+    sparkButton.title = 'Toggle player sparklines';
+    sparkButton.setAttribute('aria-label', 'Toggle player sparklines');
+    sparkButton.setAttribute('aria-pressed', 'false');
+    sparkButton.innerHTML = `
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M3 17h3l3-6 4 8 4-12 4 6h3" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" />
+      </svg>`;
+
+    const sparkLabel = document.createElement('div');
+    sparkLabel.className = 'btn-text sleeper-plus-settings-label';
+    sparkLabel.textContent = 'Sparkline';
+
+    const sparkGroup = document.createElement('div');
+    sparkGroup.className = 'sleeper-plus-spark-group';
+    sparkGroup.appendChild(sparkButton);
+    sparkGroup.appendChild(sparkLabel);
+
+    try {
+      chrome.storage.sync.get(['enableTrendOverlays'], (res) => {
+        const enabled = res && typeof res.enableTrendOverlays === 'boolean' ? res.enableTrendOverlays : DEFAULT_ENABLE_TREND_OVERLAYS;
+        if (enabled) {
+          sparkButton.classList.add('toggle-active');
+          sparkButton.setAttribute('aria-pressed', 'true');
+        } else {
+          sparkButton.classList.remove('toggle-active');
+          sparkButton.setAttribute('aria-pressed', 'false');
+        }
+      });
+    } catch (_) {}
+
+    sparkButton.addEventListener('click', (event) => {
+      event.preventDefault();
+      const toggleLocal = (current) => {
+        const next = !current;
+        try {
+          chrome.storage.sync.set({ enableTrendOverlays: next }, () => {
+            try { enableTrendOverlays = !!next; } catch (_) {}
+            if (next) { sparkButton.classList.add('toggle-active'); sparkButton.setAttribute('aria-pressed', 'true'); }
+            else { sparkButton.classList.remove('toggle-active'); sparkButton.setAttribute('aria-pressed', 'false'); }
+            try { if (typeof trendOverlayManager !== 'undefined' && trendOverlayManager && typeof trendOverlayManager.refresh === 'function') trendOverlayManager.refresh(); } catch (_) {}
+          });
+        } catch (e) {
+          try { enableTrendOverlays = !!next; } catch (_) {}
+          if (next) { sparkButton.classList.add('toggle-active'); sparkButton.setAttribute('aria-pressed', 'true'); }
+          else { sparkButton.classList.remove('toggle-active'); sparkButton.setAttribute('aria-pressed', 'false'); }
+          try { if (typeof trendOverlayManager !== 'undefined' && trendOverlayManager && typeof trendOverlayManager.refresh === 'function') trendOverlayManager.refresh(); } catch (_) {}
+        }
+      };
+
+      if (typeof enableTrendOverlays === 'boolean') toggleLocal(enableTrendOverlays);
+      else {
+        try { chrome.storage.sync.get(['enableTrendOverlays'], (res) => { const current = res && typeof res.enableTrendOverlays === 'boolean' ? res.enableTrendOverlays : DEFAULT_ENABLE_TREND_OVERLAYS; toggleLocal(current); }); }
+        catch (_) { toggleLocal(DEFAULT_ENABLE_TREND_OVERLAYS); }
+      }
+    });
+
+    return sparkGroup;
   };
 
   const resolveSettingsButtonTarget = () => {
@@ -5126,6 +5265,24 @@
     if (!container) {
       container = buildSettingsButton();
     }
+
+    // Ensure sparkline group exists only on team pages. Add or remove it
+    // dynamically so SPA navigation (client-side route changes) shows/hides
+    // the sparkline button correctly.
+    try {
+      const hasSpark = container.querySelector('.sleeper-plus-spark-group');
+      if (isTeamView()) {
+        if (!hasSpark) {
+          const spark = createSparkGroup(container);
+          // insert spark group before the main group when present
+          const main = container.querySelector('.sleeper-plus-main-button-group');
+          if (main) container.insertBefore(spark, main);
+          else container.insertBefore(spark, container.firstChild);
+        }
+      } else if (hasSpark) {
+        try { hasSpark.remove(); } catch (_) {}
+      }
+    } catch (_) {}
 
     container.dataset.placement = target.placement;
 
@@ -5181,33 +5338,58 @@
           found = candidates[0];
         }
         if (found) {
-          const wrapper = container.querySelector('.sleeper-plus-settings-button-shell');
-          const inner = container.querySelector(`.${BUTTON_CLASS}`);
-          // Copy class list from the reference button to our wrapper so
-          // site CSS (including :hover rules) applies automatically.
+          // Apply reference classes/styles to all injected button wrappers
+          const wrappers = Array.from(container.querySelectorAll('.sleeper-plus-settings-button-shell'));
+          // Copy class list from the reference button so site CSS applies automatically.
           try {
-            found.classList.forEach((c) => {
-              if (!c) return;
-              // Avoid copying layout-specific classes that would move the node
-              // itself (keep visual styling classes only). This is conservative;
-              // if a class causes unexpected behavior we'll remove it later.
-              wrapper.classList.add(c);
+            const classListToCopy = Array.from(found.classList || []);
+            wrappers.forEach((w) => {
+              classListToCopy.forEach((c) => {
+                if (!c) return;
+                w.classList.add(c);
+              });
             });
           } catch (_) {}
 
           // Copy a few key computed styles to ensure exact sizing when site
           // uses inline or computed values rather than only classes.
           const cs = window.getComputedStyle(found);
-          if (wrapper) {
-            wrapper.style.width = cs.width;
-            wrapper.style.height = cs.height;
-            wrapper.style.borderRadius = cs.borderRadius;
-            wrapper.style.border = cs.border;
-            wrapper.style.background = cs.background;
-            wrapper.style.boxShadow = cs.boxShadow;
-            wrapper.style.transition = cs.transition;
-            wrapper.style.padding = cs.padding;
-          }
+          wrappers.forEach((w) => {
+            try {
+              // Only copy explicit numeric sizes to avoid applying
+              // '0px' or 'auto' values that cause layout jumps on hard
+              // refresh. Fall back to the extension's CSS otherwise.
+              const numericWidth = parseFloat(cs.width || '0');
+              const numericHeight = parseFloat(cs.height || '0');
+              if (Number.isFinite(numericWidth) && numericWidth > 0) {
+                w.style.width = cs.width;
+              }
+              if (Number.isFinite(numericHeight) && numericHeight > 0) {
+                w.style.height = cs.height;
+              }
+              w.style.borderRadius = cs.borderRadius || w.style.borderRadius;
+              w.style.border = cs.border || w.style.border;
+              w.style.background = cs.background || w.style.background;
+              w.style.boxShadow = cs.boxShadow || w.style.boxShadow;
+              w.style.transition = cs.transition || w.style.transition;
+              w.style.padding = cs.padding || w.style.padding;
+            } catch (_) {}
+          });
+
+          // Also apply visual classes and key computed styles to the inner buttons
+          try {
+            const inners = Array.from(container.querySelectorAll(`.${BUTTON_CLASS}`));
+            inners.forEach((btn) => {
+              try {
+                classListToCopy.forEach((c) => {
+                  if (!c) return;
+                  btn.classList.add(c);
+                });
+                // copy transition so :hover transforms animate
+                btn.style.transition = cs.transition || btn.style.transition;
+              } catch (_) {}
+            });
+          } catch (_) {}
 
           // Tighten spacing for the actions placement so the injected button
           // aligns vertically with neighboring action buttons and doesn't
@@ -5219,25 +5401,34 @@
             container.style.minWidth = '48px';
             container.style.width = 'auto';
             container.style.display = 'inline-flex';
-            container.style.flexDirection = 'column';
+            // Keep actions container horizontal so spark/main groups sit side-by-side
+            container.style.flexDirection = 'row';
+            container.style.flexWrap = 'nowrap';
             container.style.gap = '9px';
             container.style.alignItems = 'center';
             container.style.justifyContent = 'center';
             container.style.alignSelf = 'center';
-            // also ensure the wrapper aligns and doesn't add extra spacing
-            if (wrapper) {
-              wrapper.style.margin = '0';
-              wrapper.style.boxSizing = 'border-box';
-            }
+            // also ensure each wrapper aligns and doesn't add extra spacing
+            const wrappersAfter = Array.from(container.querySelectorAll('.sleeper-plus-settings-button-shell'));
+            wrappersAfter.forEach((w) => {
+              try {
+                w.style.margin = '0';
+                w.style.boxSizing = 'border-box';
+              } catch (_) {}
+            });
           } catch (_) {}
 
           // Copy SVG sizing if present on the reference button
           const refSvg = found.querySelector('svg');
-          const ourSvg = container.querySelector('svg');
-          if (refSvg && ourSvg) {
+          if (refSvg) {
             const rcs = window.getComputedStyle(refSvg);
-            ourSvg.style.width = refSvg.getAttribute('width') || rcs.width || refSvg.style.width || '20px';
-            ourSvg.style.height = refSvg.getAttribute('height') || rcs.height || refSvg.style.height || '20px';
+            const ourSvgs = Array.from(container.querySelectorAll('.sleeper-plus-settings-button-shell svg'));
+            ourSvgs.forEach((ourSvg) => {
+              try {
+                ourSvg.style.width = refSvg.getAttribute('width') || rcs.width || refSvg.style.width || '20px';
+                ourSvg.style.height = refSvg.getAttribute('height') || rcs.height || refSvg.style.height || '20px';
+              } catch (_) {}
+            });
           }
         }
       } catch (e) {
@@ -5254,6 +5445,17 @@
       if (container.parentElement !== target.parent || container.nextElementSibling !== target.reference) {
         target.parent.insertBefore(container, target.reference);
       }
+    }
+
+    // Reveal the container now that initial sizing/copying has completed
+    try {
+      // Small timeout allows the browser to settle any layout changes
+      // before we fade in, avoiding visible flicker on hard refresh.
+      setTimeout(() => {
+        try { container.style.opacity = '1'; } catch (_) {}
+      }, 35);
+    } catch (_) {
+      try { container.style.opacity = '1'; } catch (_) {}
     }
 
     return true;
