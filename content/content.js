@@ -3634,12 +3634,86 @@
         cleanupAll();
         return;
       }
-      const items = roster.querySelectorAll('.team-roster-item');
+      const nodeList = roster.querySelectorAll('.team-roster-item');
+      const items = Array.from(nodeList || []);
       if (items.length === 0) {
         cleanupAll();
         return;
       }
-      items.forEach((item) => processRosterItem(item));
+
+      // Batch processing: resolve IDs and fetch trend data for all items first,
+      // then update the DOM in a single pass to avoid incremental per-player updates.
+      const tasks = items.map((item) => {
+        if (!item || !item.isConnected) {
+          return Promise.resolve({ item, skip: true });
+        }
+
+        // If an item is already being processed, skip it so we don't duplicate work.
+        if (processingMap.has(item)) {
+          return Promise.resolve({ item, skip: true });
+        }
+
+        const task = (async () => {
+          let weekContext = null;
+          try {
+            const identity = extractIdentity(item);
+            if (!identity.playerId && !identity.fullName) {
+              return { item, action: 'remove' };
+            }
+
+            const overlayRoster = isOverlayRoster(item);
+            const allowOpponentDetails = showOpponentRanks && !overlayRoster;
+            if (allowOpponentDetails) {
+              ensureInlinePlaceholder(item);
+            }
+
+            const resolvedId = await resolvePlayerId(identity);
+            if (!resolvedId) {
+              return { item, error: true, weekKey: getCurrentWeekKey(), overlayRoster };
+            }
+
+            item.dataset[DATASET_PLAYER_ID] = resolvedId;
+            weekContext = { weekNumber: getCurrentWeekNumber(), cacheKey: getCurrentWeekKey() };
+            const trend = await fetchTrendData(resolvedId, weekContext);
+            return { item, trend, weekKey: weekContext.cacheKey, overlayRoster };
+          } catch (error) {
+            return { item, error: true, weekKey: weekContext?.cacheKey || getCurrentWeekKey(), overlayRoster: isOverlayRoster(item) };
+          }
+        })();
+
+        // Mark as processing to avoid duplicates
+        processingMap.set(item, task.finally(() => processingMap.delete(item)));
+        return task;
+      });
+
+      Promise.all(tasks).then((results) => {
+        // Render the results in a single animation frame for smoother updates
+        requestAnimationFrame(() => {
+          results.forEach((result) => {
+            if (!result || result.skip) return;
+            const { item } = result;
+            if (result.action === 'remove') {
+              removeTrend(item);
+              return;
+            }
+            if (result.error) {
+              renderMessage(item, 'Sleeper+ trend unavailable', {
+                weekKey: result.weekKey || getCurrentWeekKey(),
+                overlayRoster: result.overlayRoster,
+              });
+              return;
+            }
+
+            // If the week context changed while fetching, schedule another scan
+            if (result.weekKey && result.weekKey !== getCurrentWeekKey()) {
+              scheduleScan();
+              return;
+            }
+
+            renderTrend(item, result.trend, { weekKey: result.weekKey, overlayRoster: result.overlayRoster });
+          });
+        });
+      });
     };
 
     const scheduleScan = () => {
