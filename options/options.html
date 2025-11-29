@@ -31,11 +31,19 @@
               <input id="show-opponent-ranks" type="checkbox">
               <span>Show opponent rank indicator next to players</span>
             </label>
+            <label class="toggle" for="show-additional-stats">
+              <input id="show-additional-stats" type="checkbox" checked>
+              <span>Metrics (pos rank, pts, age, exp)</span>
+            </label>
             <label class="toggle" for="enable-trend-overlays">
               <input id="enable-trend-overlays" type="checkbox" checked>
               <span>Show player trend overlays on team pages</span>
             </label>
-            <label class="toggle" for="show-sparkline-always">
+            <label class="toggle" for="show-popup-metrics" style="display: none;">
+              <input id="show-popup-metrics" type="checkbox" checked>
+              <span>Show player metrics on league page pop-ups</span>
+            </label>
+            <label class="toggle" for="show-sparkline-always" style="display: none;">
               <input id="show-sparkline-always" type="checkbox" checked>
               <span>Show player sparklines on league page pop-ups</span>
             </label>
@@ -63,13 +71,14 @@
             </label>
           </div>
 
-          <div class="settings-group">
+          <div class="settings-group" style="display: none;">
             <h2>Enhancements</h2>
             <p class="helper">Disable all Sleeper+ UI and data enhancements if you need the stock Sleeper experience.</p>
             <label class="toggle" for="disable-sleeper-plus">
               <input id="disable-sleeper-plus" type="checkbox">
               <span>Disable Sleeper+ enhancements</span>
             </label>
+            <!-- Performance mode removed -->
           </div>
         </div>
 

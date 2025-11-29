@@ -6,6 +6,8 @@
 	const DEFAULT_SHOW_OPPONENT_RANKS = false;
 	const DEFAULT_SHOW_SPARKLINE_ALWAYS = true;
 	const DEFAULT_SHOW_TEAM_TOTALS = true;
+	const DEFAULT_SHOW_POPUP_METRICS = true;
+	const DEFAULT_SHOW_ADDITIONAL_STATS = true;
 	const DEFAULT_ENABLE_NAVBAR_OVERRIDE = true;
 	const MIN_CHAT_MAX_WIDTH = 200;
 	const MAX_CHAT_MAX_WIDTH = 800;
@@ -22,6 +24,9 @@
 	const showOpponentRanksInput = document.getElementById('show-opponent-ranks');
 	const showSparklineAlwaysInput = document.getElementById('show-sparkline-always');
 	const showTeamTotalsInput = document.getElementById('show-team-totals');
+	const showAdditionalStatsInput = document.getElementById('show-additional-stats');
+	const showPopupMetricsInput = document.getElementById('show-popup-metrics');
+	
 	const enableNavbarOverrideInput = document.getElementById('enable-navbar-override');
 	const message = document.getElementById('message');
 	const saveButton = document.getElementById('save-button');
@@ -42,7 +47,10 @@
 		showOpponentRanks: DEFAULT_SHOW_OPPONENT_RANKS,
 		showSparklineAlways: DEFAULT_SHOW_SPARKLINE_ALWAYS,
 		showTeamTotals: DEFAULT_SHOW_TEAM_TOTALS,
+
 		enableNavbarOverride: DEFAULT_ENABLE_NAVBAR_OVERRIDE,
+		showAdditionalStats: DEFAULT_SHOW_ADDITIONAL_STATS,
+		showPopupMetrics: DEFAULT_SHOW_POPUP_METRICS,
 	};
 
 	let refreshInFlight = false;
@@ -263,10 +271,19 @@
 				typeof result.showSparklineAlways === 'boolean'
 					? result.showSparklineAlways
 					: DEFAULT_SHOW_SPARKLINE_ALWAYS,
+			showAdditionalStats:
+				typeof result.showAdditionalStats === 'boolean'
+					? result.showAdditionalStats
+					: DEFAULT_SHOW_ADDITIONAL_STATS,
+			showPopupMetrics:
+				typeof result.showPopupMetrics === 'boolean'
+					? result.showPopupMetrics
+					: DEFAULT_SHOW_POPUP_METRICS,
 			showTeamTotals:
 				typeof result.showTeamTotals === 'boolean'
 					? result.showTeamTotals
 					: DEFAULT_SHOW_TEAM_TOTALS,
+
 			enableNavbarOverride:
 				typeof result.enableNavbarOverride === 'boolean'
 					? result.enableNavbarOverride
@@ -286,8 +303,10 @@
 					'enableTrendOverlays',
 					'showOpponentRanks',
 					'showSparklineAlways',
+					'showAdditionalStats',
 					'showTeamTotals',
 					'enableNavbarOverride',
+					'showPopupMetrics',
 				],
 				(result) => resolve(sanitizeStoredSettings(result))
 			);
@@ -313,7 +332,9 @@
 					'showOpponentRanks',
 					'showSparklineAlways',
 					'showTeamTotals',
+					'showAdditionalStats',
 					'enableNavbarOverride',
+					'showPopupMetrics',
 				],
 				() => resolve()
 			);
@@ -334,6 +355,12 @@
 		showOpponentRanksInput.disabled = isLoading;
 		showSparklineAlwaysInput.disabled = isLoading;
 		showTeamTotalsInput.disabled = isLoading;
+		if (showAdditionalStatsInput) {
+			showAdditionalStatsInput.disabled = isLoading;
+		}
+		if (showPopupMetricsInput) {
+			showPopupMetricsInput.disabled = isLoading;
+		}
 		syncRefreshButtonState();
 	};
 
@@ -485,6 +512,8 @@
 		const enableTrendOverlays = enableTrendsInput.checked;
 		const showOpponentRanks = showOpponentRanksInput.checked;
 		const showSparklineAlways = showSparklineAlwaysInput.checked;
+		const showAdditionalStats = showAdditionalStatsInput.checked;
+		const showPopupMetrics = showPopupMetricsInput ? showPopupMetricsInput.checked : DEFAULT_SHOW_POPUP_METRICS;
 		const showTeamTotals = showTeamTotalsInput.checked;
 		const leagueIds = uniqueLeagueIds(state.leagueIds);
 
@@ -499,6 +528,8 @@
 				enableTrendOverlays,
 				showOpponentRanks,
 				showSparklineAlways,
+				showAdditionalStats,
+				showPopupMetrics,
 				showTeamTotals,
 			});
 
@@ -510,6 +541,8 @@
 			state.enableTrendOverlays = enableTrendOverlays;
 			state.showOpponentRanks = showOpponentRanks;
 			state.showSparklineAlways = showSparklineAlways;
+			state.showAdditionalStats = showAdditionalStats;
+			state.showPopupMetrics = showPopupMetrics;
 			state.showTeamTotals = showTeamTotals;
 
 			renderLeagueList();
@@ -565,6 +598,8 @@
 			state.showOpponentRanks = DEFAULT_SHOW_OPPONENT_RANKS;
 			state.showSparklineAlways = DEFAULT_SHOW_SPARKLINE_ALWAYS;
 			state.showTeamTotals = DEFAULT_SHOW_TEAM_TOTALS;
+			state.showAdditionalStats = DEFAULT_SHOW_ADDITIONAL_STATS;
+			state.showPopupMetrics = DEFAULT_SHOW_POPUP_METRICS;
 			lastAddedLeagueId = '';
 
 			leagueInput.value = '';
@@ -575,6 +610,12 @@
 			enableTrendsInput.checked = DEFAULT_ENABLE_TREND_OVERLAYS;
 			showOpponentRanksInput.checked = DEFAULT_SHOW_OPPONENT_RANKS;
 			showSparklineAlwaysInput.checked = DEFAULT_SHOW_SPARKLINE_ALWAYS;
+			if (showAdditionalStatsInput) {
+				showAdditionalStatsInput.checked = DEFAULT_SHOW_ADDITIONAL_STATS;
+			}
+			if (showPopupMetricsInput) {
+				showPopupMetricsInput.checked = DEFAULT_SHOW_POPUP_METRICS;
+			}
 			showTeamTotalsInput.checked = DEFAULT_SHOW_TEAM_TOTALS;
 			setRefreshStatus('');
 			setRefreshBusy(false);
@@ -641,6 +682,8 @@
 			state.showOpponentRanks = stored.showOpponentRanks;
 			state.showSparklineAlways = stored.showSparklineAlways;
 			state.showTeamTotals = stored.showTeamTotals;
+			state.showAdditionalStats = stored.showAdditionalStats;
+			state.showPopupMetrics = stored.showPopupMetrics;
 			lastAddedLeagueId = state.leagueIds[state.leagueIds.length - 1] || '';
 
 			renderLeagueList();
@@ -651,6 +694,12 @@
 			enableTrendsInput.checked = state.enableTrendOverlays;
 			showOpponentRanksInput.checked = state.showOpponentRanks;
 			showSparklineAlwaysInput.checked = state.showSparklineAlways;
+			if (showAdditionalStatsInput) {
+				showAdditionalStatsInput.checked = state.showAdditionalStats;
+			}
+			if (showPopupMetricsInput) {
+				showPopupMetricsInput.checked = state.showPopupMetrics;
+			}
 			showTeamTotalsInput.checked = state.showTeamTotals;
 			setRefreshStatus('');
 			await syncLastRefreshMetadata();

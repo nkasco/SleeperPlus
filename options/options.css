@@ -49,9 +49,9 @@
   --sp-radius-xl: 24px;
   --sp-radius-full: 9999px;
   
-  --sp-transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
-  --sp-transition-base: 250ms cubic-bezier(0.4, 0, 0.2, 1);
-  --sp-transition-slow: 350ms cubic-bezier(0.4, 0, 0.2, 1);
+  --sp-transition-fast: 140ms cubic-bezier(0.22, 0.8, 0.2, 1);
+  --sp-transition-base: 220ms cubic-bezier(0.22, 0.8, 0.2, 1);
+  --sp-transition-slow: 340ms cubic-bezier(0.22, 0.8, 0.2, 1);
 }
 
 body {
@@ -125,7 +125,7 @@ body {
   gap: var(--sp-space-lg);
 }
 
-.settings-group {
+  .settings-group {
   display: flex;
   flex-direction: column;
   gap: var(--sp-space-lg);
@@ -134,7 +134,9 @@ body {
   backdrop-filter: blur(8px);
   border-radius: var(--sp-radius-lg);
   border: 1px solid var(--sp-border-subtle);
-  transition: all var(--sp-transition-base);
+  transition: border-color var(--sp-transition-base), box-shadow var(--sp-transition-base), background-color var(--sp-transition-base);
+  will-change: transform, opacity, box-shadow;
+  transform: translateZ(0);
 }
 
 .settings-group:hover {
@@ -210,12 +212,14 @@ label:hover {
   font-weight: 700;
   letter-spacing: 0.02em;
   font-size: 0.9rem;
-  transition: all var(--sp-transition-base);
+  transition: transform var(--sp-transition-base), box-shadow var(--sp-transition-base), border-color var(--sp-transition-base);
+  will-change: transform, opacity, box-shadow;
   box-shadow: var(--sp-shadow-sm), 0 0 0 1px rgba(16, 185, 129, 0.2);
+  transform: translateZ(0);
 }
 
 .league-pill:hover {
-  transform: translateY(-1px);
+  transform: translateY(-2px);
   box-shadow: var(--sp-shadow-md), 0 0 0 1px rgba(16, 185, 129, 0.3);
 }
 
@@ -255,7 +259,9 @@ input[type="number"] {
   backdrop-filter: blur(8px);
   color: var(--sp-text-primary);
   font-size: 1rem;
-  transition: all var(--sp-transition-base);
+  transition: border-color var(--sp-transition-fast), box-shadow var(--sp-transition-fast), background-color var(--sp-transition-base);
+  will-change: border-color, box-shadow;
+  transform: translateZ(0);
 }
 
 input[type="text"]:focus,
@@ -274,7 +280,9 @@ input[type="number"]:focus {
   cursor: pointer;
   padding: var(--sp-space-sm);
   border-radius: var(--sp-radius-sm);
-  transition: all var(--sp-transition-base);
+  transition: background-color var(--sp-transition-base), color var(--sp-transition-fast);
+  will-change: background-color, color;
+  transform: translateZ(0);
 }
 
 .toggle:hover {
@@ -301,9 +309,11 @@ button {
   cursor: pointer;
   font-weight: 700;
   font-size: 1rem;
-  transition: all var(--sp-transition-base);
+  transition: transform var(--sp-transition-base), box-shadow var(--sp-transition-base), background-color var(--sp-transition-base);
   position: relative;
   overflow: hidden;
+  will-change: transform, box-shadow, opacity;
+  transform: translateZ(0);
 }
 
 button::before {
@@ -312,7 +322,7 @@ button::before {
   inset: 0;
   background: radial-gradient(circle at 50% 0%, var(--sp-accent-primary), transparent 70%);
   opacity: 0;
-  transition: opacity var(--sp-transition-base);
+  transition: opacity var(--sp-transition-fast) ease;
 }
 
 button:hover::before {
@@ -344,7 +354,8 @@ button:disabled {
   padding: var(--sp-space-sm) var(--sp-space-md);
   border-radius: var(--sp-radius-sm);
   font-weight: 600;
-  transition: all var(--sp-transition-base);
+  transition: color var(--sp-transition-fast), background-color var(--sp-transition-base), border-color var(--sp-transition-base);
+  will-change: color, background-color, border-color;
 }
 
 #message.success {

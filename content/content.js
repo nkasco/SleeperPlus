@@ -20,6 +20,8 @@
   const DEFAULT_SHOW_SPARKLINE_ALWAYS = true;
   const DEFAULT_SHOW_TEAM_TOTALS = true;
   const DEFAULT_ENABLE_NAVBAR_OVERRIDE = true;
+  const DEFAULT_SHOW_POPUP_METRICS = true;
+  const DEFAULT_SHOW_ADDITIONAL_STATS = true;
   const MIN_CHAT_MAX_WIDTH = 200;
   const MAX_CHAT_MAX_WIDTH = 800;
   const CENTER_PANEL_SPARKLINE_THRESHOLD = 800;
@@ -35,6 +37,7 @@
     showSparklineAlways: DEFAULT_SHOW_SPARKLINE_ALWAYS,
     showTeamTotals: DEFAULT_SHOW_TEAM_TOTALS,
     enableNavbarOverride: DEFAULT_ENABLE_NAVBAR_OVERRIDE,
+    showPopupMetrics: DEFAULT_SHOW_POPUP_METRICS,
   };
 
   let leagueIds = [];
@@ -45,6 +48,8 @@
   let showOpponentRanks = DEFAULT_SHOW_OPPONENT_RANKS;
   let showSparklineAlways = DEFAULT_SHOW_SPARKLINE_ALWAYS;
   let showTeamTotals = DEFAULT_SHOW_TEAM_TOTALS;
+  let showAdditionalStats = DEFAULT_SHOW_ADDITIONAL_STATS;
+  let showPopupMetrics = DEFAULT_SHOW_POPUP_METRICS;
   let enableNavbarOverride = DEFAULT_ENABLE_NAVBAR_OVERRIDE;
   let isActive = false;
   let settingsObserver = null;
@@ -191,6 +196,15 @@
         typeof raw.showTeamTotals === 'boolean'
           ? raw.showTeamTotals
           : DEFAULT_SETTINGS.showTeamTotals,
+      
+      showAdditionalStats:
+        typeof raw.showAdditionalStats === 'boolean'
+          ? raw.showAdditionalStats
+          : DEFAULT_SHOW_ADDITIONAL_STATS,
+      showPopupMetrics:
+        typeof raw.showPopupMetrics === 'boolean'
+          ? raw.showPopupMetrics
+          : DEFAULT_SHOW_POPUP_METRICS,
       enableNavbarOverride:
         typeof raw.enableNavbarOverride === 'boolean'
           ? raw.enableNavbarOverride
@@ -210,7 +224,9 @@
           'enableTrendOverlays',
           'showOpponentRanks',
           'showSparklineAlways',
-          'showTeamTotals',
+              'showTeamTotals',
+              'showAdditionalStats',
+                  'showPopupMetrics',
           'enableNavbarOverride',
         ],
         (result) => resolve(sanitizeSettings(result))
@@ -561,10 +577,10 @@
         --sp-radius-xl: 24px;
         --sp-radius-full: 9999px;
         
-        /* Transitions */
-        --sp-transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
-        --sp-transition-base: 250ms cubic-bezier(0.4, 0, 0.2, 1);
-        --sp-transition-slow: 350ms cubic-bezier(0.4, 0, 0.2, 1);
+        /* Transitions (smoother easing for hover/interaction) */
+        --sp-transition-fast: 140ms cubic-bezier(0.22, 0.8, 0.2, 1);
+        --sp-transition-base: 220ms cubic-bezier(0.22, 0.8, 0.2, 1);
+        --sp-transition-slow: 340ms cubic-bezier(0.22, 0.8, 0.2, 1);
       }
       
       .${SETTINGS_PARENT_CLASS} {
@@ -595,7 +611,8 @@
          siblings inside the container while keeping their internal
          structure vertical (button above label). */
       #${BUTTON_CONTAINER_ID} > .sleeper-plus-main-button-group,
-      #${BUTTON_CONTAINER_ID} > .sleeper-plus-spark-group {
+      #${BUTTON_CONTAINER_ID} > .sleeper-plus-spark-group,
+      #${BUTTON_CONTAINER_ID} > .sleeper-plus-stats-group {
         display: flex;
         flex-direction: column;
         align-items: center;
@@ -767,25 +784,35 @@
       /* Modern Team Roster Cards */
       .team-roster-item {
         margin: var(--sp-space-sm) !important;
-        padding: var(--sp-space-md) !important;
+        padding: 4px var(--sp-space-md) !important;
         border-radius: var(--sp-radius-md) !important;
         border: 1px solid var(--sp-border-subtle) !important;
         background-clip: padding-box;
-        transition: all var(--sp-transition-base) !important;
+        transition: transform var(--sp-transition-base), box-shadow var(--sp-transition-base), border-color var(--sp-transition-base), background-color var(--sp-transition-base), color var(--sp-transition-base) !important;
+        will-change: transform, opacity, box-shadow;
         position: relative;
         overflow: hidden;
+        transform: translateZ(0);
       }
-      
+
       .team-roster-item::before {
         content: '';
         position: absolute;
         inset: 0;
         background: linear-gradient(135deg, var(--sp-glass-shine), transparent 60%);
         opacity: 0;
-        transition: opacity var(--sp-transition-base);
+        transition: opacity var(--sp-transition-base) ease;
         pointer-events: none;
+        will-change: opacity, transform;
+        transform: translateZ(0);
       }
-      
+
+      .team-roster-item:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 20px rgba(0,0,0,0.25);
+        border-color: var(--sp-border-medium) !important;
+      }
+
       .team-roster-item:hover::before {
         opacity: 1;
       }
@@ -1821,7 +1848,53 @@
       }
     `;
 
-  const removeStyles = () => {
+    // performance mode styles removed
+
+    const getHideAdditionalStatsStyleBlock = () => `
+      /* Hide additional player meta items only for roster items (pos rank, pts, age, exp) */
+      .sleeper-plus-hide-additional-stats .team-roster-item span.sleeper-plus-trend__meta-item[data-meta-key='pos-rank'],
+      .sleeper-plus-hide-additional-stats .team-roster-item span.sleeper-plus-trend__meta-item[data-meta-key='pts'],
+      .sleeper-plus-hide-additional-stats .team-roster-item span.sleeper-plus-trend__meta-item[data-meta-key='age'],
+      .sleeper-plus-hide-additional-stats .team-roster-item span.sleeper-plus-trend__meta-item[data-meta-key='exp'] {
+        display: none !important;
+      }
+
+      /* Hide only the visual chart/stack inside roster items and selective meta keys.
+         Preserve name and left/middle stat text by not touching those containers. */
+      .sleeper-plus-hide-additional-stats .team-roster-item .sleeper-plus-trend__chart,
+      .sleeper-plus-hide-additional-stats .team-roster-item .sleeper-plus-trend__stack {
+        display: none !important;
+      }
+
+      /* Collapse spacing produced by chart/stack removal inside roster items */
+      .sleeper-plus-hide-additional-stats .team-roster-item .sleeper-plus-trend__chart,
+      .sleeper-plus-hide-additional-stats .team-roster-item .sleeper-plus-trend__stack {
+        margin: 0 !important;
+        padding: 0 !important;
+        height: auto !important;
+      }
+        /* Remove any visual styling the extension added to trend wrappers inside roster rows
+           so we don't leave behind gray/rounded background bars when hiding charts. */
+        .sleeper-plus-hide-additional-stats .team-roster-item .sleeper-plus-trend,
+        .sleeper-plus-hide-additional-stats .team-roster-item .sleeper-plus-trend-row,
+        .sleeper-plus-hide-additional-stats .team-roster-item .sleeper-plus-trend__meta {
+          background: transparent !important;
+          background-image: none !important;
+          box-shadow: none !important;
+          border: none !important;
+          min-height: 0 !important;
+          min-width: 0 !important;
+        }
+
+        /* Also ensure any meta-item pills that remain don't keep opaque backgrounds */
+        .sleeper-plus-hide-additional-stats .team-roster-item .sleeper-plus-trend__meta-item {
+          background: transparent !important;
+          color: inherit !important;
+          padding: 0 !important;
+        }
+    `;
+
+    const removeStyles = () => {
     const existing = document.getElementById(STYLE_ELEMENT_ID);
     if (existing && existing.parentNode) {
       existing.parentNode.removeChild(existing);
@@ -1836,7 +1909,9 @@
 
     const style = ensureStyleElement();
     const navbarStyles = enableNavbarOverride ? getNavbarStyleBlock() : '';
-    style.textContent = `${getButtonStyleBlock()}${navbarStyles}`;
+    const perfStyles = '';
+    const hideStatsStyles = !showAdditionalStats ? getHideAdditionalStatsStyleBlock() : '';
+    style.textContent = `${getButtonStyleBlock()}${navbarStyles}${perfStyles}${hideStatsStyles}`;
   };
 
   const updateLayoutStyles = () => {
@@ -1885,7 +1960,9 @@
           border-left: none !important;
         }`;
 
-    style.textContent = `${layoutStyles}${buttonStyles}${navbarStyles}${trendStyles}${compactStyles}`;
+    const perfStyles = '';
+    const hideStatsStyles = !showAdditionalStats ? getHideAdditionalStatsStyleBlock() : '';
+    style.textContent = `${layoutStyles}${buttonStyles}${navbarStyles}${trendStyles}${compactStyles}${perfStyles}${hideStatsStyles}`;
   };
 
   const setCompactCenterPanelState = (shouldCompact) => {
@@ -2375,12 +2452,18 @@
       return { playerId, fullName: name };
     };
 
-    const createMetaItem = (label, value, { title } = {}) => {
+    const createMetaItem = (label, value, { title, key } = {}) => {
       if (!value && value !== 0) {
         return null;
       }
       const wrapper = document.createElement('span');
       wrapper.className = META_ITEM_CLASS;
+      try {
+        const resolvedKey = key && String(key).trim()
+          ? String(key).toLowerCase().replace(/[^a-z0-9-]+/g, '-')
+          : String(label || '').toLowerCase().replace(/[^a-z0-9]+/g, '-');
+        if (resolvedKey) wrapper.setAttribute('data-meta-key', resolvedKey);
+      } catch (_) {}
       if (title) {
         wrapper.title = title;
       }
@@ -3479,29 +3562,34 @@
       meta.className = META_CLASS;
       const metaItems = [];
 
-      if (data.positionRank?.rank) {
-        const positionLabel =
-          data.positionRank.position && data.positionRank.position !== 'UNK'
-            ? data.positionRank.position
-            : 'Rank';
-        const rankValue = `#${data.positionRank.rank}`;
-        metaItems.push(
-          createMetaItem(positionLabel, rankValue, {
-            title: `${positionLabel} rank ${data.positionRank.rank}`,
-          })
-        );
-      }
+      const shouldShowMeta = !overlayRoster || showPopupMetrics;
 
-      if (data.totalPoints !== undefined) {
-        metaItems.push(createMetaItem('Pts', formatNumber(data.totalPoints)));
-      }
+      if (shouldShowMeta) {
+        if (data.positionRank?.rank) {
+          const positionLabel =
+            data.positionRank.position && data.positionRank.position !== 'UNK'
+              ? data.positionRank.position
+              : 'Rank';
+          const rankValue = `#${data.positionRank.rank}`;
+          metaItems.push(
+            createMetaItem(positionLabel, rankValue, {
+              title: `${positionLabel} rank ${data.positionRank.rank}`,
+              key: 'pos-rank',
+            })
+          );
+        }
 
-      if (data.age) {
-        metaItems.push(createMetaItem('Age', formatNumber(data.age)));
-      }
+        if (data.totalPoints !== undefined) {
+          metaItems.push(createMetaItem('Pts', formatNumber(data.totalPoints), { key: 'pts' }));
+        }
 
-      if (data.yearsExp !== undefined) {
-        metaItems.push(createMetaItem('Exp', formatNumber(data.yearsExp)));
+        if (data.age) {
+          metaItems.push(createMetaItem('Age', formatNumber(data.age), { key: 'age' }));
+        }
+
+        if (data.yearsExp !== undefined) {
+          metaItems.push(createMetaItem('Exp', formatNumber(data.yearsExp), { key: 'exp' }));
+        }
       }
 
       metaItems.filter(Boolean).forEach((node) => meta.appendChild(node));
@@ -5312,6 +5400,73 @@
     return sparkGroup;
   };
 
+  // Helper: create and return the stats toggle group (show/hide additional stats)
+  const createStatsGroup = (container) => {
+    const existing = container && container.querySelector && container.querySelector('.sleeper-plus-stats-group');
+    if (existing) return existing;
+
+    const statsButton = document.createElement('button');
+    statsButton.type = 'button';
+    statsButton.className = `${BUTTON_CLASS} sleeper-plus-settings-button-shell`;
+    statsButton.title = 'Toggle additional player stats';
+    statsButton.setAttribute('aria-label', 'Toggle additional player stats');
+    statsButton.setAttribute('aria-pressed', 'false');
+    statsButton.innerHTML = `
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M4 6h16M4 12h16M4 18h16" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.6" />
+      </svg>`;
+
+    const statsLabel = document.createElement('div');
+    statsLabel.className = 'btn-text sleeper-plus-settings-label';
+    statsLabel.textContent = 'Metrics';
+
+    const statsGroup = document.createElement('div');
+    statsGroup.className = 'sleeper-plus-stats-group';
+    statsGroup.appendChild(statsButton);
+    statsGroup.appendChild(statsLabel);
+
+    try {
+      chrome.storage.sync.get(['showAdditionalStats'], (res) => {
+        const enabled = res && typeof res.showAdditionalStats === 'boolean' ? res.showAdditionalStats : DEFAULT_SHOW_ADDITIONAL_STATS;
+        if (enabled) {
+          statsButton.classList.add('toggle-active');
+          statsButton.setAttribute('aria-pressed', 'true');
+          try { document.documentElement.classList.remove('sleeper-plus-hide-additional-stats'); } catch (_) {}
+        } else {
+          statsButton.classList.remove('toggle-active');
+          statsButton.setAttribute('aria-pressed', 'false');
+          try { document.documentElement.classList.add('sleeper-plus-hide-additional-stats'); } catch (_) {}
+        }
+      });
+    } catch (_) {}
+
+    statsButton.addEventListener('click', (event) => {
+      event.preventDefault();
+      const toggleLocal = (current) => {
+        const next = !current;
+        try {
+          chrome.storage.sync.set({ showAdditionalStats: next }, () => {
+            try { showAdditionalStats = !!next; } catch (_) {}
+            if (next) { statsButton.classList.add('toggle-active'); statsButton.setAttribute('aria-pressed', 'true'); document.documentElement.classList.remove('sleeper-plus-hide-additional-stats'); }
+            else { statsButton.classList.remove('toggle-active'); statsButton.setAttribute('aria-pressed', 'false'); document.documentElement.classList.add('sleeper-plus-hide-additional-stats'); }
+          });
+        } catch (e) {
+          try { showAdditionalStats = !!next; } catch (_) {}
+          if (next) { statsButton.classList.add('toggle-active'); statsButton.setAttribute('aria-pressed', 'true'); document.documentElement.classList.remove('sleeper-plus-hide-additional-stats'); }
+          else { statsButton.classList.remove('toggle-active'); statsButton.setAttribute('aria-pressed', 'false'); document.documentElement.classList.add('sleeper-plus-hide-additional-stats'); }
+        }
+      };
+
+      if (typeof showAdditionalStats === 'boolean') toggleLocal(showAdditionalStats);
+      else {
+        try { chrome.storage.sync.get(['showAdditionalStats'], (res) => { const current = res && typeof res.showAdditionalStats === 'boolean' ? res.showAdditionalStats : DEFAULT_SHOW_ADDITIONAL_STATS; toggleLocal(current); }); }
+        catch (_) { toggleLocal(DEFAULT_SHOW_ADDITIONAL_STATS); }
+      }
+    });
+
+    return statsGroup;
+  };
+
   const resolveSettingsButtonTarget = () => {
     const actionsRow = document.querySelector('.sleeper-plus-team-totals__actions-row');
     if (actionsRow) {
@@ -5345,7 +5500,16 @@
     // the sparkline button correctly.
     try {
       const hasSpark = container.querySelector('.sleeper-plus-spark-group');
+      const hasStats = container.querySelector('.sleeper-plus-stats-group');
       if (isTeamView()) {
+        // Insert the metrics (stats) group before the sparkline group so
+        // the Metrics button appears left of Sparkline in the actions row.
+        if (!hasStats) {
+          const stats = createStatsGroup(container);
+          const main = container.querySelector('.sleeper-plus-main-button-group');
+          if (main) container.insertBefore(stats, main);
+          else container.insertBefore(stats, container.firstChild);
+        }
         if (!hasSpark) {
           const spark = createSparkGroup(container);
           // insert spark group before the main group when present
@@ -5355,6 +5519,7 @@
         }
       } else if (hasSpark) {
         try { hasSpark.remove(); } catch (_) {}
+        try { if (hasStats) hasStats.remove(); } catch (_) {}
       }
     } catch (_) {}
 
@@ -5735,12 +5900,19 @@
     showOpponentRanks = stored.showOpponentRanks;
     showSparklineAlways = stored.showSparklineAlways;
     showTeamTotals = stored.showTeamTotals;
+    showAdditionalStats = stored.showAdditionalStats;
+    showPopupMetrics = stored.showPopupMetrics;
     enableNavbarOverride = stored.enableNavbarOverride;
 
     evaluateActivation();
     currentBaseUrl = window.location.href;
     watchHistoryChanges();
     startBodyObserver();
+
+    try {
+      if (!showAdditionalStats) document.documentElement.classList.add('sleeper-plus-hide-additional-stats');
+      else document.documentElement.classList.remove('sleeper-plus-hide-additional-stats');
+    } catch (_) {}
   };
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
@@ -5840,6 +6012,36 @@
       if (showTeamTotals !== nextShowTeamTotals) {
         showTeamTotals = nextShowTeamTotals;
         shouldEvaluate = true;
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(changes, 'showPopupMetrics')) {
+      const nextShowPopupMetrics =
+        typeof changes.showPopupMetrics.newValue === 'boolean'
+          ? changes.showPopupMetrics.newValue
+          : DEFAULT_SHOW_POPUP_METRICS;
+
+      if (showPopupMetrics !== nextShowPopupMetrics) {
+        showPopupMetrics = nextShowPopupMetrics;
+        trendOverlayManager.refresh();
+      }
+    }
+
+    
+
+    if (Object.prototype.hasOwnProperty.call(changes, 'showAdditionalStats')) {
+      const nextShowAdditionalStats =
+        typeof changes.showAdditionalStats.newValue === 'boolean'
+          ? changes.showAdditionalStats.newValue
+          : DEFAULT_SHOW_ADDITIONAL_STATS;
+
+      if (showAdditionalStats !== nextShowAdditionalStats) {
+        showAdditionalStats = nextShowAdditionalStats;
+        try {
+          if (!showAdditionalStats) document.documentElement.classList.add('sleeper-plus-hide-additional-stats');
+          else document.documentElement.classList.remove('sleeper-plus-hide-additional-stats');
+        } catch (_) {}
+        if (isActive) updateLayoutStyles();
       }
     }
 
